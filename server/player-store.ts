@@ -88,6 +88,11 @@ export function isValidGuestSecret(secret: string): boolean {
   return secret.length >= 32 && secret.length <= 128;
 }
 
+/** The client sends `board`; older code used `boardId`. Accept both. */
+function boardKind(body: Record<string, unknown>): BoardKind {
+  return (body.board ?? body.boardId) === "wagers" ? "wagers" : "wins";
+}
+
 function hashStr(text: string): string {
   return crypto.createHash("sha256").update(text).digest("hex");
 }
@@ -201,8 +206,8 @@ export class PlayerService {
       case "/vip": return this.claimVipGift();
       case "/referral": return this.claimReferral(body);
       case "/collectionClaim": return this.claimSetReward(body);
-      case "/leaderboard": return this.getLeaderboard(body.boardId === "wagers" ? "wagers" : "wins");
-      case "/leaderboardClaim": return this.claimBoardReward(body.boardId === "wagers" ? "wagers" : "wins");
+      case "/leaderboard": return this.getLeaderboard(boardKind(body));
+      case "/leaderboardClaim": return this.claimBoardReward(boardKind(body));
       case "/settings": return this.updateSettings(body);
       case "/tutorial": return this.setTutorial(body.done !== false);
       default: throw new HttpError(404, "not_found", "Route not found");

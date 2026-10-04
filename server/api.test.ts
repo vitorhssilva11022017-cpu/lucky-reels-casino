@@ -199,7 +199,8 @@ describe.each(backends)("server state ($name storage)", (backend) => {
     const guest = newGuest();
     await call("/session", { guest });
     for (let i = 0; i < 3; i++) await call("/spin", { guest }, { machineId: MACHINE, betIndex: BET_INDEX });
-    const board = await call("/leaderboard", { guest }, { boardId: "wagers" });
+    // The client sends { board }, not { boardId }.
+    const board = await call("/leaderboard", { guest }, { board: "wagers" });
     expect(board.status).toBe(200);
     expect(board.data.you.win).toBe(BET * 3);
     const mine = board.data.entries.find((e: { rank: number }) => e.rank === board.data.you.rank);

@@ -3191,6 +3191,9 @@ function isValidGuestId(id) {
 function isValidGuestSecret(secret) {
   return secret.length >= 32 && secret.length <= 128;
 }
+function boardKind(body) {
+  return (body.board ?? body.boardId) === "wagers" ? "wagers" : "wins";
+}
 function hashStr2(text) {
   return crypto3.createHash("sha256").update(text).digest("hex");
 }
@@ -3297,9 +3300,9 @@ var PlayerService = class {
       case "/collectionClaim":
         return this.claimSetReward(body);
       case "/leaderboard":
-        return this.getLeaderboard(body.boardId === "wagers" ? "wagers" : "wins");
+        return this.getLeaderboard(boardKind(body));
       case "/leaderboardClaim":
-        return this.claimBoardReward(body.boardId === "wagers" ? "wagers" : "wins");
+        return this.claimBoardReward(boardKind(body));
       case "/settings":
         return this.updateSettings(body);
       case "/tutorial":
