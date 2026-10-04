@@ -2726,6 +2726,9 @@ function boardReward(rank) {
   }
   return 0;
 }
+function prevWeekKey(now) {
+  return weekKey(weekStart(now) - 1);
+}
 
 // server/engine/slot.ts
 var stripCache = /* @__PURE__ */ new Map();
@@ -3631,10 +3634,14 @@ var PlayerService = class {
     const d = this.data;
     const now = Date.now();
     const week = weekKey(now);
-    const [rows, you] = await Promise.all([
+    const prevWeek = prevWeekKey(now);
+    const [rows, you, prevTop, prevYou] = await Promise.all([
       this.storage.top(board, week, BOARD_SIZE),
-      this.storage.rank(board, week, d.boardId)
+      this.storage.rank(board, week, d.boardId),
+      this.storage.top(board, prevWeek, 3),
+      this.storage.rank(board, prevWeek, d.boardId)
     ]);
+    const prevAmount = prevYou && prevYou.rank <= BOARD_SIZE ? boardReward(prevYou.rank) : 0;
     return {
       board,
       week,
@@ -3652,25 +3659,33 @@ var PlayerService = class {
       })),
       you: you ? { rank: you.rank, win: you.score } : null,
       rewardTiers: REWARD_TIERS,
-      champions: null
+      champions: prevTop.length ? { week: prevWeek, top: prevTop.map((e) => ({ name: e.name, level: e.level, win: e.score })) } : null,
+      /** The player's final standing in last week's race; prizes are only paid for finished weeks. */
+      lastWeek: prevYou && prevAmount > 0 ? {
+        week: prevWeek,
+        rank: prevYou.rank,
+        amount: prevAmount,
+        claimed: (board === "wagers" ? d.wagerClaimWeek : d.boardClaimWeek) === prevWeek
+      } : null
     };
   }
+  /** Pays the prize for the player's final rank in last week's race, once. The running week never pays out. */
   async claimBoardReward(board) {
     const d = this.data;
-    const week = weekKey(Date.now());
+    const prevWeek = prevWeekKey(Date.now());
     const wagered = board === "wagers";
-    if ((wagered ? d.wagerClaimWeek : d.boardClaimWeek) === week) {
-      throw new HttpError(409, "already_claimed", "This week's reward is already collected");
+    if ((wagered ? d.wagerClaimWeek : d.boardClaimWeek) === prevWeek) {
+      throw new HttpError(409, "already_claimed", "Last week's prize is already collected");
     }
-    const standing = await this.storage.rank(board, week, d.boardId);
+    const standing = await this.storage.rank(board, prevWeek, d.boardId);
     const rank = standing?.rank ?? null;
-    if (!rank || rank > BOARD_SIZE) throw new HttpError(409, "not_ready", "Reach a paid rank to claim a weekly prize");
+    if (!rank || rank > BOARD_SIZE) throw new HttpError(409, "not_ready", "Prizes are paid when the week ends. Finish in the top 50 to win.");
     const amount = boardReward(rank);
     if (amount <= 0) throw new HttpError(409, "not_ready", "No reward for this rank");
     d.balance += amount;
-    if (wagered) d.wagerClaimWeek = week;
-    else d.boardClaimWeek = week;
-    return { amount, rank, board, player: this.publicPlayer() };
+    if (wagered) d.wagerClaimWeek = prevWeek;
+    else d.boardClaimWeek = prevWeek;
+    return { amount, rank, board, week: prevWeek, player: this.publicPlayer() };
   }
   async claimVipGift() {
     const d = this.data;

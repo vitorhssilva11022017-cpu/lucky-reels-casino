@@ -354,12 +354,11 @@ function LeaderboardBanner() {
   }, [player, fetchLeaderboard]);
 
   const claimable = (["wins", "wagers"] as RaceBoard[]).filter((b) => {
-    const d = boards[b];
-    const you = d?.you;
-    if (!d || !you || !player) return false;
+    // Only last week's finished race pays out.
+    const last = boards[b]?.lastWeek;
+    if (!last || !player || last.claimed) return false;
     const claimed = b === "wagers" ? player.wagerClaimWeek : player.boardClaimWeek;
-    if (claimed === d.week) return false;
-    return (d.rewardTiers.find((t) => you.rank <= t.minRank)?.amount ?? 0) > 0;
+    return claimed !== last.week && last.amount > 0;
   }).length;
 
   const endsAt = boards.wins?.endsAt ?? boards.wagers?.endsAt ?? 0;

@@ -10,6 +10,7 @@ import { MACHINES } from "./engine/machines.js";
 import { START_BALANCE } from "./engine/progression.js";
 import { REFERRAL_PER_FRIEND } from "./engine/referral.js";
 import { playSpin } from "./engine/slot.js";
+import { prevWeekKey } from "./engine/week.js";
 import type { Rng } from "./engine/types.js";
 import type { TokenVerifier } from "./auth.js";
 import { createApp } from "./index.js";
@@ -205,6 +206,42 @@ describe.each(backends)("server state ($name storage)", (backend) => {
     expect(board.data.you.win).toBe(BET * 3);
     const mine = board.data.entries.find((e: { rank: number }) => e.rank === board.data.you.rank);
     expect(mine.spins).toBe(3);
+  });
+
+  it("pays weekly prizes only for last week's final rank, and only once", async () => {
+    const guest = newGuest();
+    await call("/session", { guest });
+    await call("/spin", { guest }, { machineId: MACHINE, betIndex: BET_INDEX });
+
+    // Ranking on the running week is not enough: the race has not finished.
+    const early = await call("/leaderboardClaim", { guest }, { board: "wagers" });
+    expect(early.status).toBe(409);
+    expect(early.data.error).toBe("not_ready");
+
+    const { player } = await storage.load(`g:${guest.id}`);
+    const prev = prevWeekKey(Date.now());
+    const info = { name: "Tester", level: 1, machine: MACHINE, vip: "Bronze", ts: Date.now() };
+    await storage.recordWager(prev, player!.boardId, 1_000_000_000_000, info);
+
+    const board = await call("/leaderboard", { guest }, { board: "wagers" });
+    expect(board.data.lastWeek).toEqual({ week: prev, rank: 1, amount: 10_000_000, claimed: false });
+    expect(board.data.champions.top[0].win).toBe(1_000_000_000_000);
+
+    const before = (await call("/session", { guest })).data.player.balance;
+    const claim = await call("/leaderboardClaim", { guest }, { board: "wagers" });
+    expect(claim.status).toBe(200);
+    expect(claim.data.amount).toBe(10_000_000);
+    expect(claim.data.player.balance).toBe(before + 10_000_000);
+
+    const again = await call("/leaderboardClaim", { guest }, { board: "wagers" });
+    expect(again.status).toBe(409);
+    expect(again.data.error).toBe("already_claimed");
+    const after = await call("/leaderboard", { guest }, { board: "wagers" });
+    expect(after.data.lastWeek.claimed).toBe(true);
+
+    // The other board is separate, and this player did not place there last week.
+    const wins = await call("/leaderboardClaim", { guest }, { board: "wins" });
+    expect(wins.status).toBe(409);
   });
 
   it("credits the inviter through pending credits", async () => {

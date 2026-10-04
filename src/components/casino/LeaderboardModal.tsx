@@ -106,12 +106,14 @@ export function LeaderboardModal() {
   if (modal !== "leaderboard") return null;
 
   const you = data?.you ?? null;
+  // Prizes are paid only for the finished week. The player snapshot updates on claim before the board reloads.
+  const lastWeek = data?.lastWeek ?? null;
   const claimedWeek = tab === "wagers" ? player?.wagerClaimWeek : player?.boardClaimWeek;
-  const claimedThisWeek = player !== null && data !== null && claimedWeek === data.week;
-  const claimAmount = you ? (data?.rewardTiers.find((t) => you.rank <= t.minRank)?.amount ?? 0) : 0;
+  const lastWeekClaimed = lastWeek !== null && (lastWeek.claimed || claimedWeek === lastWeek.week);
+  const prizeZoneAmount = you ? (data?.rewardTiers.find((t) => you.rank <= t.minRank)?.amount ?? 0) : 0;
 
   const onClaim = async () => {
-    if (claiming || !you) return;
+    if (claiming || !lastWeek) return;
     setClaiming(true);
     const res = await claimLeaderboard(tab);
     setClaiming(false);
@@ -207,12 +209,20 @@ export function LeaderboardModal() {
           </div>
         ) : null}
 
-        {you && !claimedThisWeek && claimAmount > 0 ? (
-          <GButton ref={claimRef} variant="gold" disabled={claiming} onClick={onClaim} className="glow-pulse mx-auto w-full max-w-[300px] py-3 text-[19px]">
-            COLLECT RANK #{you.rank} · {formatShort(claimAmount)}
-          </GButton>
+        {lastWeek && !lastWeekClaimed ? (
+          <div className="flex flex-col items-center gap-1.5">
+            <div className="text-center text-[13px] font-bold text-amber-100">Last week you finished #{lastWeek.rank}!</div>
+            <GButton ref={claimRef} variant="gold" disabled={claiming} onClick={onClaim} className="glow-pulse mx-auto w-full max-w-[300px] py-3 text-[19px]">
+              COLLECT {formatShort(lastWeek.amount)}
+            </GButton>
+          </div>
         ) : null}
-        {you && claimedThisWeek ? <div className="pill-dark mx-auto rounded-full px-4 py-2 text-[13px] text-emerald-100">Weekly prize collected. Good luck next week!</div> : null}
+        {lastWeek && lastWeekClaimed ? <div className="pill-dark mx-auto rounded-full px-4 py-2 text-[13px] text-emerald-100">Last week's prize collected. Good luck this week!</div> : null}
+        {you && prizeZoneAmount > 0 ? (
+          <div className="rounded-2xl bg-black/30 px-3 py-2 text-center text-[12.5px] text-violet-100/80">
+            Finish this week at #{you.rank} or better to win {formatShort(prizeZoneAmount)}. Prizes unlock when the race ends.
+          </div>
+        ) : null}
 
         <div className="rounded-2xl bg-black/30 px-3 py-2.5 ring-1 ring-white/10">
           <div className="mb-1 text-[11px] font-bold uppercase tracking-wider text-amber-100/70">Weekly prizes</div>

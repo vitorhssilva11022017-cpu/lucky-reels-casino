@@ -39,3 +39,8 @@ export function boardReward(rank: number): number {
   }
   return 0;
 }
+
+/** Key of the week before the one containing `now` — the most recent finished race. */
+export function prevWeekKey(now: number): string {
+  return weekKey(weekStart(now) - 1);
+}

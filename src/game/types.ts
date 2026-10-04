@@ -145,6 +145,8 @@ export interface LeaderboardState {
   rewardTiers: RewardTier[];
   /** Podium of the previous week, archived at rollover. */
   champions?: RaceChampions | null;
+  /** This player's final rank in last week's race, when it earned a prize. Only finished weeks pay out. */
+  lastWeek?: { week: string; rank: number; amount: number; claimed: boolean } | null;
 }
 
 export interface ReferralInfo {
