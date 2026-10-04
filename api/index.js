@@ -1760,6 +1760,749 @@ var STORE_PACKS = [
   { id: "vault", name: "Royal Vault", amount: 5e6, cooldownMs: 24 * 60 * 60 * 1e3 }
 ];
 
+// node_modules/jose/dist/webapi/lib/buffer_utils.js
+var encoder = new TextEncoder();
+var decoder = new TextDecoder();
+var strictDecoder = new TextDecoder("utf-8", { fatal: true });
+var MAX_INT32 = 2 ** 32;
+function concat(...buffers) {
+  const size = buffers.reduce((acc, { length }) => acc + length, 0), buf = new Uint8Array(size);
+  let i = 0;
+  for (const buffer of buffers)
+    buf.set(buffer, i), i += buffer.length;
+  return buf;
+}
+var NON_ASCII = /[^\x00-\x7f]/;
+function encode(string) {
+  if (typeof string == "string" && string.length >= 128) {
+    if (NON_ASCII.test(string))
+      throw new TypeError("non-ASCII string encountered in encode()");
+    return encoder.encode(string);
+  }
+  const bytes = new Uint8Array(string.length);
+  for (let i = 0; i < string.length; i++) {
+    const code = string.charCodeAt(i);
+    if (code > 127)
+      throw new TypeError("non-ASCII string encountered in encode()");
+    bytes[i] = code;
+  }
+  return bytes;
+}
+function decodeBase64(encoded, url = false) {
+  if (Uint8Array.fromBase64)
+    return Uint8Array.fromBase64(encoded, { alphabet: url ? "base64url" : "base64" });
+  if (url) {
+    if (encoded.includes("+") || encoded.includes("/"))
+      throw new TypeError("Invalid base64url");
+    encoded = encoded.replace(/-/g, "+").replace(/_/g, "/");
+  }
+  const binary = atob(encoded), bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++)
+    bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+// node_modules/jose/dist/webapi/util/errors.js
+var JOSEError = class extends Error {
+  static code = "ERR_JOSE_GENERIC";
+  code = "ERR_JOSE_GENERIC";
+  constructor(message2, options) {
+    super(message2, options), this.name = this.constructor.name, Error.captureStackTrace?.(this, this.constructor);
+  }
+};
+var JWTClaimValidationFailed = class extends JOSEError {
+  static code = "ERR_JWT_CLAIM_VALIDATION_FAILED";
+  code = "ERR_JWT_CLAIM_VALIDATION_FAILED";
+  claim;
+  reason;
+  payload;
+  constructor(message2, payload, claim = "unspecified", reason = "unspecified") {
+    super(message2, { cause: { claim, reason, payload } }), this.claim = claim, this.reason = reason, this.payload = payload;
+  }
+};
+var JWTExpired = class extends JOSEError {
+  static code = "ERR_JWT_EXPIRED";
+  code = "ERR_JWT_EXPIRED";
+  claim;
+  reason;
+  payload;
+  constructor(message2, payload, claim = "unspecified", reason = "unspecified") {
+    super(message2, { cause: { claim, reason, payload } }), this.claim = claim, this.reason = reason, this.payload = payload;
+  }
+};
+var JOSEAlgNotAllowed = class extends JOSEError {
+  static code = "ERR_JOSE_ALG_NOT_ALLOWED";
+  code = "ERR_JOSE_ALG_NOT_ALLOWED";
+};
+var JOSENotSupported = class extends JOSEError {
+  static code = "ERR_JOSE_NOT_SUPPORTED";
+  code = "ERR_JOSE_NOT_SUPPORTED";
+};
+var JWSInvalid = class extends JOSEError {
+  static code = "ERR_JWS_INVALID";
+  code = "ERR_JWS_INVALID";
+};
+var JWTInvalid = class extends JOSEError {
+  static code = "ERR_JWT_INVALID";
+  code = "ERR_JWT_INVALID";
+};
+var JWKSInvalid = class extends JOSEError {
+  static code = "ERR_JWKS_INVALID";
+  code = "ERR_JWKS_INVALID";
+};
+var JWKSNoMatchingKey = class extends JOSEError {
+  static code = "ERR_JWKS_NO_MATCHING_KEY";
+  code = "ERR_JWKS_NO_MATCHING_KEY";
+  constructor(message2 = "no applicable key found in the JSON Web Key Set", options) {
+    super(message2, options);
+  }
+};
+var JWKSMultipleMatchingKeys = class extends JOSEError {
+  [Symbol.asyncIterator] = async function* () {
+  };
+  static code = "ERR_JWKS_MULTIPLE_MATCHING_KEYS";
+  code = "ERR_JWKS_MULTIPLE_MATCHING_KEYS";
+  constructor(message2 = "multiple matching keys found in the JSON Web Key Set", options) {
+    super(message2, options);
+  }
+};
+var JWKSTimeout = class extends JOSEError {
+  static code = "ERR_JWKS_TIMEOUT";
+  code = "ERR_JWKS_TIMEOUT";
+  constructor(message2 = "request timed out", options) {
+    super(message2, options);
+  }
+};
+var JWSSignatureVerificationFailed = class extends JOSEError {
+  static code = "ERR_JWS_SIGNATURE_VERIFICATION_FAILED";
+  code = "ERR_JWS_SIGNATURE_VERIFICATION_FAILED";
+  constructor(message2 = "signature verification failed", options) {
+    super(message2, options);
+  }
+};
+
+// node_modules/jose/dist/webapi/util/base64url.js
+var invalid = "The input to be decoded is not correctly encoded.";
+function decode(input) {
+  try {
+    return decodeBase64(typeof input == "string" ? input : decoder.decode(input), true);
+  } catch (cause) {
+    throw new TypeError(invalid, { cause });
+  }
+}
+
+// node_modules/jose/dist/webapi/lib/validate.js
+function isObject(input) {
+  if (typeof input != "object" || input === null || Object.prototype.toString.call(input) !== "[object Object]")
+    return false;
+  const prototype = Object.getPrototypeOf(input);
+  return prototype === null || Object.getPrototypeOf(prototype) === null;
+}
+function isJwkSet(input) {
+  return isObject(input) && Array.isArray(input.keys) && Array.from(input.keys).every(isObject);
+}
+function isDisjoint(...headers) {
+  const parameters = /* @__PURE__ */ new Set();
+  for (const header2 of headers)
+    if (header2)
+      for (const parameter of Object.keys(header2)) {
+        if (parameters.has(parameter))
+          return false;
+        parameters.add(parameter);
+      }
+  return true;
+}
+function decodeBase64url(value, label, ErrorClass) {
+  try {
+    return decode(value);
+  } catch {
+    throw new ErrorClass(`Failed to base64url decode the ${label}`);
+  }
+}
+function encodeBase64url(value, label, ErrorClass) {
+  try {
+    return encode(value);
+  } catch {
+    throw new ErrorClass(`The ${label} is not a valid base64url string`);
+  }
+}
+function parseJoseHeader(b64, ErrorClass, message2) {
+  let parsed;
+  try {
+    parsed = JSON.parse(strictDecoder.decode(decode(b64)));
+  } catch {
+    throw new ErrorClass(message2);
+  }
+  if (!isObject(parsed))
+    throw new ErrorClass(message2);
+  return parsed;
+}
+var JWS_RECOGNIZED = { __proto__: null, b64: true };
+function validateAlgorithms(option, algorithms) {
+  if (algorithms !== void 0 && (!Array.isArray(algorithms) || algorithms.some((s) => typeof s != "string")))
+    throw new TypeError(`"${option}" option must be an array of strings`);
+  return algorithms === void 0 ? void 0 : new Set(algorithms);
+}
+function validateCrit(Err, recognizedDefault, recognizedOption, protectedHeader, joseHeader) {
+  if (joseHeader.crit !== void 0 && protectedHeader?.crit === void 0)
+    throw new Err('"crit" (Critical) Header Parameter MUST be integrity protected');
+  if (!protectedHeader || protectedHeader.crit === void 0)
+    return [];
+  if (!Array.isArray(protectedHeader.crit) || protectedHeader.crit.length === 0 || protectedHeader.crit.some((input) => typeof input != "string" || input.length === 0))
+    throw new Err('"crit" (Critical) Header Parameter MUST be an array of non-empty strings when present');
+  const recognized = recognizedOption === void 0 ? recognizedDefault : { __proto__: null, ...recognizedOption, ...recognizedDefault };
+  for (const parameter of protectedHeader.crit) {
+    if (!(parameter in recognized))
+      throw new JOSENotSupported(`Extension Header Parameter "${parameter}" is not recognized`);
+    if (!Object.hasOwn(joseHeader, parameter) || joseHeader[parameter] === void 0)
+      throw new Err(`Extension Header Parameter "${parameter}" is missing`);
+    if (recognized[parameter] && (!Object.hasOwn(protectedHeader, parameter) || protectedHeader[parameter] === void 0))
+      throw new Err(`Extension Header Parameter "${parameter}" MUST be integrity protected`);
+  }
+  return protectedHeader.crit;
+}
+function validateB64(protectedHeader, extensions) {
+  if (extensions.includes("b64")) {
+    const b64 = protectedHeader.b64;
+    if (typeof b64 != "boolean")
+      throw new JWSInvalid('The "b64" (base64url-encode payload) Header Parameter must be a boolean');
+    return b64;
+  }
+  return true;
+}
+
+// node_modules/jose/dist/webapi/lib/key.js
+var tag = (key) => key[Symbol.toStringTag];
+var jwkMatchesOp = (entry, key, usage) => {
+  const { alg } = entry;
+  if (key.use !== void 0) {
+    const expected = usage === "sign" || usage === "verify" ? "sig" : "enc";
+    if (key.use !== expected)
+      throw new TypeError(`Invalid key for this operation, its "use" must be "${expected}" when present`);
+  }
+  if (key.alg !== void 0 && key.alg !== alg)
+    throw new TypeError(`Invalid key for this operation, its "alg" must be "${alg}" when present`);
+  if (Array.isArray(key.key_ops)) {
+    const expectedKeyOp = usage === "encrypt" || usage === "decrypt" ? entry.ops?.[usage === "encrypt" ? 0 : 1] : usage;
+    if (expectedKeyOp && !key.key_ops.includes(expectedKeyOp))
+      throw new TypeError(`Invalid key for this operation, its "key_ops" must include "${expectedKeyOp}" when present`);
+  }
+};
+async function prepareKey(entry, key, usage) {
+  const { alg, secret } = entry, privateKey = usage === "decrypt" || usage === "sign";
+  if (secret && key instanceof Uint8Array)
+    return key;
+  let normalized, keyObject;
+  if (isObject(key)) {
+    if (normalized = normalizeJwk(key), typeof normalized.kty != "string")
+      throw invalidKeyType(alg, key, secret);
+    if (!(secret ? normalized.kty === "oct" && typeof normalized.k == "string" : normalized.kty !== "oct" && (privateKey ? normalized.kty === "AKP" && typeof normalized.priv == "string" || typeof normalized.d == "string" : normalized.d === void 0 && normalized.priv === void 0)))
+      throw new TypeError(secret ? 'JSON Web Key for symmetric algorithms must have JWK "kty" (Key Type) equal to "oct" and the JWK "k" (Key Value) present' : `JSON Web Key for this operation must be a ${privateKey ? "private" : "public"} JWK`);
+    if (jwkMatchesOp(entry, normalized, usage), normalized.kty === "oct")
+      return decode(normalized.k);
+    if (!Object.isFrozen(key)) {
+      const { key_ops } = key;
+      Array.isArray(key_ops) && Object.freeze(key_ops), Object.freeze(key);
+    }
+  } else {
+    if (!isKeyLike(key))
+      throw invalidKeyType(alg, key, secret);
+    const expectedType = secret ? "secret" : privateKey ? "private" : "public";
+    if (key.type !== expectedType && (secret || ["secret", "public", "private"].includes(key.type)))
+      throw new TypeError(`${tag(key)} instances must be of type "${expectedType}" for the ${alg} algorithm`);
+    if (isCryptoKey(key))
+      return key;
+    if (keyObject = key, keyObject.type === "secret")
+      return keyObject.export();
+  }
+  cache ||= /* @__PURE__ */ new WeakMap();
+  const cacheKey = key;
+  let cached = cache.get(cacheKey);
+  if (cached?.[alg])
+    return cached[alg];
+  if (cached || cache.set(cacheKey, cached = {}), keyObject && typeof keyObject.toCryptoKey == "function") {
+    const isPublic = keyObject.type === "public", crv = nist[keyObject.asymmetricKeyDetails?.namedCurve], params = entry.resolve?.({ crv, asymmetricKeyType: keyObject.asymmetricKeyType }) ?? entry.subtle;
+    return cached[alg] = keyObject.toCryptoKey(params, isPublic, entry.usages[isPublic ? 0 : 1]);
+  }
+  return normalized ??= keyObject.export({ format: "jwk" }), normalized.alg = alg, cached[alg] = await jwkToKey(entry, normalized);
+}
+var cache;
+var nist = {
+  __proto__: null,
+  prime256v1: "P-256",
+  secp384r1: "P-384",
+  secp521r1: "P-521"
+};
+var isCryptoKey = (key) => {
+  if (key?.[Symbol.toStringTag] === "CryptoKey")
+    return true;
+  try {
+    return key instanceof CryptoKey;
+  } catch {
+    return false;
+  }
+};
+var isKeyObject = (key) => key?.[Symbol.toStringTag] === "KeyObject";
+var isKeyLike = (key) => isCryptoKey(key) || isKeyObject(key);
+function message(msg, actual, ...types) {
+  if (types.length > 2) {
+    const last = types.pop();
+    msg += `one of type ${types.join(", ")}, or ${last}.`;
+  } else types.length === 2 ? msg += `one of type ${types[0]} or ${types[1]}.` : msg += `of type ${types[0]}.`;
+  return actual == null ? msg += ` Received ${actual}` : typeof actual == "function" && actual.name ? msg += ` Received function ${actual.name}` : typeof actual == "object" && actual != null && actual.constructor?.name && (msg += ` Received an instance of ${actual.constructor.name}`), msg;
+}
+function invalidKeyType(alg, actual, secret) {
+  const types = ["CryptoKey", "KeyObject", "JSON Web Key"];
+  return secret && types.push("Uint8Array"), new TypeError(message(`Key for the ${alg} algorithm must be `, actual, ...types));
+}
+var unusable = (name, prop = "algorithm.name") => new TypeError(`CryptoKey does not support this operation, its ${prop} must be ${name}`);
+function checkUsage(key, usage) {
+  if (usage && !key.usages.includes(usage))
+    throw new TypeError(`CryptoKey does not support this operation, its usages must include ${usage}.`);
+}
+function checkModulusLength(alg, key) {
+  const { modulusLength } = key.algorithm;
+  if (typeof modulusLength != "number" || modulusLength < 2048)
+    throw new TypeError(`${alg} requires key modulusLength to be 2048 bits or larger`);
+}
+function checkCryptoKey(key, expected, usage) {
+  const algorithm = key.algorithm;
+  if (algorithm.name !== expected.name)
+    throw unusable(expected.name);
+  if (expected.hash && algorithm.hash?.name !== expected.hash)
+    throw unusable(expected.hash, "algorithm.hash");
+  if (expected.namedCurve && algorithm.namedCurve !== expected.namedCurve)
+    throw unusable(expected.namedCurve, "algorithm.namedCurve");
+  if (expected.length !== void 0 && algorithm.length !== expected.length)
+    throw unusable(expected.length, "algorithm.length");
+  checkUsage(key, usage);
+}
+function snapshotJwk(jwk) {
+  return { __proto__: null, ...jwk };
+}
+function normalizeJwk(jwk) {
+  const normalized = snapshotJwk(jwk);
+  if (normalized.ext !== void 0 && typeof normalized.ext != "boolean")
+    throw new TypeError('"ext" (Extractable) Parameter must be a boolean');
+  if (normalized.key_ops !== void 0) {
+    const value = normalized.key_ops, keyOps = Array.isArray(value) ? [...value] : void 0;
+    if (!keyOps || keyOps.some((operation) => typeof operation != "string") || new Set(keyOps).size !== keyOps.length)
+      throw new TypeError('"key_ops" (Key Operations) Parameter must be an array of unique strings');
+    normalized.key_ops = keyOps;
+  }
+  return normalized;
+}
+async function jwkToKey(entry, jwk, extractable) {
+  if (!entry.kty.includes(jwk.kty))
+    throw new JOSENotSupported('Invalid or unsupported JWK "alg" (Algorithm) Parameter value');
+  const algorithm = entry.resolve?.({ kty: jwk.kty, crv: jwk.crv }) ?? entry.subtle, isPrivate = !!(jwk.d || jwk.priv), keyData = { ...jwk, ext: extractable ?? jwk.ext };
+  return keyData.kty !== "AKP" && delete keyData.alg, delete keyData.use, crypto.subtle.importKey("jwk", keyData, algorithm, keyData.ext ?? !isPrivate, jwk.key_ops ?? entry.usages[isPrivate ? 1 : 0]);
+}
+async function rawKey(key, expected, usage, extractable = false) {
+  return key instanceof Uint8Array && (key = await crypto.subtle.importKey("raw", key, expected, extractable, [usage])), checkCryptoKey(key, expected, usage), key;
+}
+
+// node_modules/jose/dist/webapi/lib/key_descriptor.js
+function table(entries) {
+  const out = { __proto__: null };
+  for (const alg in entries)
+    out[alg] = { ...entries[alg], alg };
+  return out;
+}
+
+// node_modules/jose/dist/webapi/lib/jws_algorithms.js
+var sig = [["verify"], ["sign"]];
+function hmac(bits) {
+  const subtle2 = { name: "HMAC", hash: `SHA-${bits}` };
+  return { kty: ["oct"], secret: true, subtle: subtle2, signing: subtle2, usages: sig };
+}
+function rsa(bits, saltLength) {
+  const subtle2 = { name: saltLength ? "RSA-PSS" : "RSASSA-PKCS1-v1_5", hash: `SHA-${bits}` };
+  return {
+    kty: ["RSA"],
+    subtle: subtle2,
+    signing: saltLength ? { ...subtle2, saltLength } : subtle2,
+    usages: sig,
+    minRsaBits: 2048
+  };
+}
+function ecdsa(crv, bits) {
+  return {
+    kty: ["EC"],
+    crv,
+    subtle: { name: "ECDSA", namedCurve: crv },
+    signing: { name: "ECDSA", hash: `SHA-${bits}` },
+    usages: sig
+  };
+}
+function eddsa() {
+  const subtle2 = { name: "Ed25519" };
+  return {
+    kty: ["OKP"],
+    crv: "Ed25519",
+    subtle: subtle2,
+    signing: subtle2,
+    usages: sig
+  };
+}
+function mldsa(bits) {
+  const subtle2 = { name: `ML-DSA-${bits}` };
+  return {
+    kty: ["AKP"],
+    subtle: subtle2,
+    signing: subtle2,
+    usages: sig
+  };
+}
+var JWS = table({
+  HS256: hmac(256),
+  HS384: hmac(384),
+  HS512: hmac(512),
+  RS256: rsa(256),
+  RS384: rsa(384),
+  RS512: rsa(512),
+  PS256: rsa(256, 32),
+  PS384: rsa(384, 48),
+  PS512: rsa(512, 64),
+  ES256: ecdsa("P-256", 256),
+  ES384: ecdsa("P-384", 384),
+  ES512: ecdsa("P-521", 512),
+  EdDSA: eddsa(),
+  Ed25519: eddsa(),
+  "ML-DSA-44": mldsa(44),
+  "ML-DSA-65": mldsa(65),
+  "ML-DSA-87": mldsa(87)
+});
+function jwsAlgorithm(alg) {
+  const entry = typeof alg == "string" ? JWS[alg] : void 0;
+  if (!entry)
+    throw new JOSENotSupported(`alg ${alg} is not supported either by JOSE or your javascript runtime`);
+  return entry;
+}
+
+// node_modules/jose/dist/webapi/lib/jws_verify.js
+function prepareVerify(options) {
+  return [options && validateAlgorithms("algorithms", options.algorithms), options?.crit];
+}
+function parseProtectedHeader(encodedProtected) {
+  return encodedProtected === void 0 ? {} : parseJoseHeader(encodedProtected, JWSInvalid, "JWS Protected Header is invalid");
+}
+function encodeCompactUnencodedPayload(payload) {
+  try {
+    return encode(payload);
+  } catch {
+    throw new JWSInvalid("JWS Compact Serialization payload must use only ASCII characters");
+  }
+}
+async function verifySignature(jws, shared, key, encodeUnencodedPayload, parsedProtected) {
+  const { protected: encodedProtected, header: header2, payload: inputPayload } = jws, parsedProt = parsedProtected ?? parseProtectedHeader(encodedProtected);
+  if (!isDisjoint(parsedProt, header2))
+    throw new JWSInvalid("JWS Protected and JWS Unprotected Header Parameter names must be disjoint");
+  const joseHeader = { ...parsedProt, ...header2 }, b64 = validateB64(parsedProt, validateCrit(JWSInvalid, JWS_RECOGNIZED, shared[1], parsedProt, joseHeader)), { alg } = joseHeader;
+  if (typeof alg != "string" || !alg)
+    throw new JWSInvalid('JWS "alg" (Algorithm) Header Parameter missing or invalid');
+  if (shared[0] && !shared[0].has(alg))
+    throw new JOSEAlgNotAllowed('"alg" (Algorithm) Header Parameter value not allowed');
+  if (b64) {
+    if (typeof inputPayload != "string")
+      throw new JWSInvalid("JWS Payload must be a string");
+  } else if (typeof inputPayload != "string" && !(inputPayload instanceof Uint8Array))
+    throw new JWSInvalid("JWS Payload must be a string or an Uint8Array instance");
+  const signingPayload = b64 || typeof inputPayload != "string" ? inputPayload : encodeUnencodedPayload(inputPayload);
+  let resolvedKey = false;
+  typeof key == "function" && (key = await key(parsedProt, jws), resolvedKey = true);
+  const entry = jwsAlgorithm(alg), data = concat(encodedProtected !== void 0 ? encode(encodedProtected) : new Uint8Array(), encode("."), typeof signingPayload == "string" ? shared[2] ??= encodeBase64url(signingPayload, "payload", JWSInvalid) : signingPayload), signature = decodeBase64url(jws.signature, "signature", JWSInvalid), k = await prepareKey(entry, key, "verify"), cryptoKey = await rawKey(k, entry.subtle, "verify");
+  entry.minRsaBits && checkModulusLength(entry.alg, cryptoKey);
+  let verified = false;
+  try {
+    verified = await crypto.subtle.verify(entry.signing, cryptoKey, signature, data);
+  } catch {
+  }
+  if (!verified)
+    throw new JWSSignatureVerificationFailed();
+  const result = { payload: typeof signingPayload == "string" ? decodeBase64url(signingPayload, "payload", JWSInvalid) : signingPayload };
+  return encodedProtected !== void 0 && (result.protectedHeader = parsedProt), header2 !== void 0 && (result.unprotectedHeader = header2), resolvedKey ? [{ ...result, key: k }, b64] : [result, b64];
+}
+async function verifyCompact(jws, shared, key) {
+  if (jws instanceof Uint8Array && (jws = decoder.decode(jws)), typeof jws != "string")
+    throw new JWSInvalid("Compact JWS must be a string or Uint8Array");
+  const { 0: protectedHeader, 1: payload, 2: signature, length } = jws.split(".");
+  if (length !== 3)
+    throw new JWSInvalid("Invalid Compact JWS");
+  return verifySignature({ payload, protected: protectedHeader, signature }, shared, key, encodeCompactUnencodedPayload);
+}
+
+// node_modules/jose/dist/webapi/lib/jwt_claims_set.js
+var epoch = (date) => Math.floor(date.getTime() / 1e3);
+var multipliers = {
+  s: 1,
+  m: 60,
+  h: 3600,
+  d: 86400,
+  w: 604800,
+  y: 31557600
+};
+var REGEX = /^(\+|\-)? ?(\d+|\d+\.\d+) ?(seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|w|years?|yrs?|y)(?: (ago|from now))?$/i;
+var checkFailed = "check_failed";
+function invalidDuration() {
+  throw new TypeError("Invalid time period format");
+}
+function secs(str) {
+  typeof str != "string" && invalidDuration();
+  const matched = REGEX.exec(str);
+  (!matched || matched[4] && matched[1]) && invalidDuration();
+  const value = parseFloat(matched[2]), numericDate2 = Math.round(value * multipliers[matched[3][0].toLowerCase()]);
+  return Number.isFinite(numericDate2) || invalidDuration(), matched[1] === "-" || matched[4] === "ago" ? -numericDate2 : numericDate2;
+}
+function validateInput(label, input) {
+  if (!Number.isFinite(input))
+    throw new TypeError(`Invalid ${label} input`);
+  return input;
+}
+var normalizeTyp = (value) => {
+  const normalized = value.toLowerCase();
+  return value.includes("/") ? normalized : `application/${normalized}`;
+};
+var checkAudiencePresence = (audPayload, audOption) => typeof audPayload == "string" ? audOption.includes(audPayload) : Array.isArray(audPayload) ? audOption.some((aud) => audPayload.includes(aud)) : false;
+function validateNumericDate(payload, claim, required = false) {
+  const value = payload[claim];
+  if (!(value === void 0 && !required)) {
+    if (typeof value != "number")
+      throw new JWTClaimValidationFailed(`"${claim}" claim must be a number`, payload, claim, "invalid");
+    return value;
+  }
+}
+function unexpectedClaim(payload, claim) {
+  throw new JWTClaimValidationFailed(`unexpected "${claim}" claim value`, payload, claim, checkFailed);
+}
+function validateClaimsSet(protectedHeader, encodedPayload, options = {}) {
+  let payload;
+  try {
+    payload = JSON.parse(strictDecoder.decode(encodedPayload));
+  } catch {
+  }
+  if (!isObject(payload))
+    throw new JWTInvalid("JWT Claims Set must be a top-level JSON object");
+  const { typ } = options;
+  if (typ !== void 0 && (typeof protectedHeader.typ != "string" || normalizeTyp(protectedHeader.typ) !== normalizeTyp(typ)))
+    throw new JWTClaimValidationFailed('unexpected "typ" JWT header value', payload, "typ", checkFailed);
+  const { requiredClaims = [], issuer, subject, audience, maxTokenAge } = options, presenceCheck = [...requiredClaims];
+  maxTokenAge !== void 0 && presenceCheck.push("iat"), audience !== void 0 && presenceCheck.push("aud"), subject !== void 0 && presenceCheck.push("sub"), issuer !== void 0 && presenceCheck.push("iss");
+  for (const claim of new Set(presenceCheck.reverse()))
+    if (!Object.hasOwn(payload, claim))
+      throw new JWTClaimValidationFailed(`missing required "${claim}" claim`, payload, claim, "missing");
+  issuer !== void 0 && !(Array.isArray(issuer) ? issuer : [issuer]).includes(payload.iss) && unexpectedClaim(payload, "iss"), subject !== void 0 && payload.sub !== subject && unexpectedClaim(payload, "sub"), audience !== void 0 && !checkAudiencePresence(payload.aud, typeof audience == "string" ? [audience] : audience) && unexpectedClaim(payload, "aud");
+  const { clockTolerance } = options;
+  let tolerance = 0;
+  if (typeof clockTolerance == "string")
+    tolerance = secs(clockTolerance);
+  else if (clockTolerance !== void 0) {
+    if (typeof clockTolerance != "number")
+      throw new TypeError("Invalid clockTolerance option type");
+    tolerance = clockTolerance;
+  }
+  validateInput("clockTolerance option", tolerance);
+  const { currentDate } = options, now = validateInput("currentDate option", epoch(currentDate === void 0 ? /* @__PURE__ */ new Date() : currentDate)), iat = validateNumericDate(payload, "iat", maxTokenAge !== void 0), nbf = validateNumericDate(payload, "nbf");
+  if (nbf !== void 0 && nbf > now + tolerance)
+    throw new JWTClaimValidationFailed('"nbf" claim timestamp check failed', payload, "nbf", checkFailed);
+  const exp = validateNumericDate(payload, "exp");
+  if (exp !== void 0 && exp <= now - tolerance)
+    throw new JWTExpired('"exp" claim timestamp check failed', payload, "exp", checkFailed);
+  if (maxTokenAge !== void 0) {
+    const age = now - iat, max = validateInput("maxTokenAge option", typeof maxTokenAge == "number" ? maxTokenAge : secs(maxTokenAge));
+    if (age - tolerance > max)
+      throw new JWTExpired('"iat" claim timestamp check failed (too far in the past)', payload, "iat", checkFailed);
+    if (age < -tolerance)
+      throw new JWTClaimValidationFailed('"iat" claim timestamp check failed (it should be in the past)', payload, "iat", checkFailed);
+  }
+  return payload;
+}
+
+// node_modules/jose/dist/webapi/jwt/verify.js
+async function jwtVerify(jwt, key, options) {
+  const [verified, b64] = await verifyCompact(jwt, prepareVerify(options), key);
+  if (!b64)
+    throw new JWTInvalid("JWTs MUST NOT use unencoded payload");
+  const payload = validateClaimsSet(verified.protectedHeader, verified.payload, options);
+  return { ...verified, payload };
+}
+
+// node_modules/jose/dist/webapi/jwks/local.js
+function isUsableJWK(jwk, entry, alg, kid) {
+  const { kty, key_ops: keyOps, ext, kid: jwkKid, alg: jwkAlg, use, crv } = jwk;
+  return (ext === void 0 || typeof ext == "boolean") && (keyOps === void 0 || Array.isArray(keyOps) && keyOps.every((operation, index) => typeof operation == "string" && keyOps.indexOf(operation) === index) && keyOps.includes("verify")) && entry.kty.includes(kty) && (kid === void 0 || typeof kid == "string" && kid === jwkKid) && (jwkAlg === void 0 ? kty !== "AKP" : alg === jwkAlg) && (use === void 0 || use === "sig") && (!entry.crv || crv === entry.crv);
+}
+async function importWithAlgCache(cache2, jwk, entry) {
+  const cached = cache2.get(jwk) || cache2.set(jwk, {}).get(jwk), { alg } = entry;
+  if (cached[alg] === void 0) {
+    const pending = jwkToKey(entry, jwk, true).then((key) => {
+      if (key.type !== "public")
+        throw new JWKSInvalid("JSON Web Key Set members must be public keys");
+      return cached[alg] = key, key;
+    }).catch((error) => {
+      throw cached[alg] === pending && delete cached[alg], error;
+    });
+    cached[alg] = pending;
+  }
+  return cached[alg];
+}
+function createLocalJWKSet(jwks) {
+  let snapshot;
+  try {
+    snapshot = structuredClone(jwks);
+  } catch {
+  }
+  if (!isJwkSet(snapshot))
+    throw new JWKSInvalid("JSON Web Key Set malformed");
+  const metadata = snapshot.keys.map((jwk) => {
+    const normalized = snapshotJwk(jwk);
+    return Array.isArray(normalized.key_ops) && (normalized.key_ops = [...normalized.key_ops]), normalized;
+  }), cached = /* @__PURE__ */ new WeakMap();
+  return Object.defineProperty(async (protectedHeader, token) => {
+    const { alg, kid } = { ...protectedHeader, ...token?.header }, entry = typeof alg == "string" ? JWS[alg] : void 0;
+    if (!entry || entry.secret)
+      throw new JOSENotSupported('Unsupported "alg" value for a JSON Web Key Set');
+    const candidates = snapshot.keys.filter((_, index) => isUsableJWK(metadata[index], entry, alg, kid)), { 0: jwk, length } = candidates;
+    if (!length)
+      throw new JWKSNoMatchingKey();
+    if (length !== 1) {
+      const error = new JWKSMultipleMatchingKeys();
+      throw error[Symbol.asyncIterator] = async function* () {
+        for (const jwk2 of candidates)
+          try {
+            yield await importWithAlgCache(cached, jwk2, entry);
+          } catch {
+          }
+      }, error;
+    }
+    return importWithAlgCache(cached, jwk, entry);
+  }, "jwks", {
+    value: () => structuredClone(snapshot)
+  });
+}
+
+// node_modules/jose/dist/webapi/jwks/remote.js
+function isCloudflareWorkers() {
+  return typeof WebSocketPair < "u" || typeof navigator < "u" && navigator.userAgent === "Cloudflare-Workers" || typeof EdgeRuntime < "u" && EdgeRuntime === "vercel";
+}
+var USER_AGENT;
+(typeof navigator > "u" || !navigator.userAgent?.startsWith?.("Mozilla/5.0 ")) && (USER_AGENT = "jose/v6.2.12");
+var customFetch = /* @__PURE__ */ Symbol();
+async function fetchJwks(url, headers, signal, fetchImpl = fetch) {
+  const response = await fetchImpl(url, {
+    method: "GET",
+    signal,
+    redirect: "manual",
+    headers
+  }).catch((err) => {
+    throw err.name === "TimeoutError" ? new JWKSTimeout() : err;
+  });
+  if (response.status !== 200)
+    throw new JOSEError("Expected 200 OK from the JSON Web Key Set HTTP response");
+  try {
+    return await response.json();
+  } catch {
+    throw new JOSEError("Failed to parse the JSON Web Key Set HTTP response as JSON");
+  }
+}
+var jwksCache = /* @__PURE__ */ Symbol();
+function isFreshFor(timestamp, duration) {
+  return Number.isFinite(timestamp) && Date.now() < timestamp + duration;
+}
+function validateDuration(value, fallback, option) {
+  if (Number.isNaN(value))
+    throw new TypeError(`"${option}" option must not be NaN`);
+  return typeof value == "number" ? value : fallback;
+}
+function createRemoteJWKSet(url, options) {
+  if (!(url instanceof URL))
+    throw new TypeError("url must be an instance of URL");
+  const href = new URL(url.href).href, opts = options ?? {}, timeoutOption = opts.timeoutDuration;
+  if (typeof timeoutOption == "number" && (!Number.isInteger(timeoutOption) || timeoutOption < 0))
+    throw new TypeError('"timeoutDuration" option must be a non-negative integer');
+  const timeoutDuration = typeof timeoutOption == "number" ? timeoutOption : 5e3, cooldownDuration = validateDuration(opts.cooldownDuration, 3e4, "cooldownDuration"), cacheMaxAge = validateDuration(opts.cacheMaxAge, 6e5, "cacheMaxAge"), headers = new Headers(opts.headers);
+  USER_AGENT && !headers.has("User-Agent") && headers.set("User-Agent", USER_AGENT), headers.has("accept") || headers.set("accept", "application/json, application/jwk-set+json");
+  const fetchImpl = opts[customFetch], cache2 = opts[jwksCache];
+  let jwksTimestamp, pendingFetch, reloadSequence = 0, appliedSequence = 0, local;
+  if (cache2 && typeof cache2 == "object") {
+    const { uat, jwks } = cache2;
+    isFreshFor(uat, cacheMaxAge) && isJwkSet(jwks) && (jwksTimestamp = uat, local = createLocalJWKSet(jwks));
+  }
+  const reload = async () => {
+    if (pendingFetch && isCloudflareWorkers() && (pendingFetch = void 0), !pendingFetch) {
+      const sequence = ++reloadSequence, current = pendingFetch = fetchJwks(href, headers, AbortSignal.timeout(timeoutDuration), fetchImpl).then((json) => {
+        const next = createLocalJWKSet(json);
+        if (sequence <= appliedSequence)
+          return;
+        local = next;
+        const updatedAt = Date.now();
+        cache2 && (cache2.uat = updatedAt, cache2.jwks = json), jwksTimestamp = updatedAt, appliedSequence = sequence;
+      }).finally(() => {
+        pendingFetch === current && (pendingFetch = void 0);
+      });
+    }
+    await pendingFetch;
+  };
+  return Object.defineProperties(async (protectedHeader, token) => {
+    (!local || !isFreshFor(jwksTimestamp, cacheMaxAge)) && await reload();
+    try {
+      return await local(protectedHeader, token);
+    } catch (err) {
+      if (err instanceof JWKSNoMatchingKey && !isFreshFor(jwksTimestamp, cooldownDuration))
+        return await reload(), local(protectedHeader, token);
+      throw err;
+    }
+  }, {
+    coolingDown: {
+      get: () => isFreshFor(jwksTimestamp, cooldownDuration),
+      enumerable: true
+    },
+    fresh: {
+      get: () => isFreshFor(jwksTimestamp, cacheMaxAge),
+      enumerable: true
+    },
+    reload: {
+      value: reload,
+      enumerable: true
+    },
+    reloading: {
+      get: () => !!pendingFetch,
+      enumerable: true
+    },
+    jwks: {
+      value: () => local?.jwks(),
+      enumerable: true
+    }
+  });
+}
+
+// server/auth.ts
+function verifierFromEnv(env = process.env) {
+  const base = env.RORK_AUTH_URL?.replace(/\/+$/, "");
+  const jwksUrl = env.RORK_AUTH_JWKS_URL ?? (base ? `${base}/.well-known/jwks.json` : null);
+  if (!jwksUrl) return null;
+  const keys = createRemoteJWKSet(new URL(jwksUrl));
+  return async (token) => {
+    try {
+      const { payload } = await jwtVerify(token, keys);
+      return payload.sub ? { sub: String(payload.sub) } : null;
+    } catch {
+      return null;
+    }
+  };
+}
+
+// server/errors.ts
+var HttpError = class extends Error {
+  constructor(status, code, message2) {
+    super(message2);
+    this.status = status;
+    this.code = code;
+  }
+  status;
+  code;
+};
+
 // server/engine/missions.ts
 var POOL = {
   easy: [
@@ -2122,30 +2865,212 @@ function winTier(cfg, win, bet) {
 // server/store.ts
 import fs from "fs";
 import path from "path";
+import crypto2 from "crypto";
+var NO_CREDITS = { balance: 0, refCount: 0 };
+var DEFAULT_TTL_MS = 1e4;
+var DEFAULT_WAIT_MS = 1e4;
+var BOARD_TTL_S = 35 * 24 * 60 * 60;
+function busy() {
+  return new HttpError(409, "busy", "Your last action is still finishing. Try again in a moment.");
+}
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+var KeyedMutex = class {
+  tails = /* @__PURE__ */ new Map();
+  async lock(key, waitMs) {
+    const prev = this.tails.get(key) ?? Promise.resolve();
+    let release;
+    const mine = new Promise((r) => release = r);
+    const tail = prev.then(() => mine);
+    this.tails.set(key, tail);
+    const unlock = () => {
+      release();
+      if (this.tails.get(key) === tail) this.tails.delete(key);
+    };
+    let timer;
+    const timedOut = await Promise.race([
+      prev.then(() => false),
+      new Promise((r) => timer = setTimeout(() => r(true), waitMs))
+    ]);
+    clearTimeout(timer);
+    if (timedOut) {
+      unlock();
+      throw busy();
+    }
+    return unlock;
+  }
+};
+var RELEASE_LUA = `if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end return 0`;
+var SAVE_LUA = `
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+redis.call('SET', KEYS[2], ARGV[2])
+local b = tonumber(ARGV[3])
+local r = tonumber(ARGV[4])
+if b ~= 0 then redis.call('HINCRBY', KEYS[3], 'balance', -b) end
+if r ~= 0 then redis.call('HINCRBY', KEYS[3], 'refCount', -r) end
+return 1`;
+var BEST_WIN_LUA = `
+local cur = redis.call('ZSCORE', KEYS[1], ARGV[1])
+if cur and tonumber(cur) >= tonumber(ARGV[2]) then return 0 end
+redis.call('ZADD', KEYS[1], ARGV[2], ARGV[1])
+redis.call('HSET', KEYS[2], ARGV[1], ARGV[3])
+redis.call('EXPIRE', KEYS[1], ARGV[4])
+redis.call('EXPIRE', KEYS[2], ARGV[4])
+return 1`;
+var RedisStorage = class {
+  constructor(redis, prefix = "", opts = {}) {
+    this.redis = redis;
+    this.prefix = prefix;
+    this.ttlMs = opts.ttlMs ?? DEFAULT_TTL_MS;
+    this.waitMs = opts.waitMs ?? DEFAULT_WAIT_MS;
+  }
+  redis;
+  prefix;
+  local = new KeyedMutex();
+  ttlMs;
+  waitMs;
+  k(...parts) {
+    return this.prefix + parts.join(":");
+  }
+  async acquire(id) {
+    const deadline = Date.now() + this.waitMs;
+    const unlockLocal = await this.local.lock(id, this.waitMs);
+    const token = crypto2.randomUUID();
+    try {
+      for (let attempt = 0; ; attempt++) {
+        const ok = await this.redis.set(this.k("lock", id), token, { nx: true, px: this.ttlMs });
+        if (ok) return { id, token, unlockLocal };
+        if (Date.now() >= deadline) throw busy();
+        await sleep(Math.min(250, 20 * 2 ** attempt) + Math.random() * 20);
+      }
+    } catch (err) {
+      unlockLocal();
+      throw err;
+    }
+  }
+  async release(lock) {
+    try {
+      await this.redis.eval(RELEASE_LUA, [this.k("lock", lock.id)], [lock.token]);
+    } finally {
+      lock.unlockLocal();
+    }
+  }
+  async load(id) {
+    const p = this.redis.pipeline();
+    p.get(this.k("player", id));
+    p.hgetall(this.k("credits", id));
+    const [player, credits] = await p.exec();
+    return {
+      player: player ?? null,
+      credits: { balance: Number(credits?.balance ?? 0), refCount: Number(credits?.refCount ?? 0) }
+    };
+  }
+  async save(lock, player, consumed) {
+    const ok = await this.redis.eval(
+      SAVE_LUA,
+      [this.k("lock", lock.id), this.k("player", lock.id), this.k("credits", lock.id)],
+      [lock.token, JSON.stringify(player), String(consumed.balance), String(consumed.refCount)]
+    );
+    if (Number(ok) !== 1) throw busy();
+  }
+  async addCredits(id, credits) {
+    const p = this.redis.pipeline();
+    if (credits.balance) p.hincrby(this.k("credits", id), "balance", credits.balance);
+    if (credits.refCount) p.hincrby(this.k("credits", id), "refCount", credits.refCount);
+    await p.exec();
+  }
+  async claimRefCode(code, owner) {
+    const p = this.redis.pipeline();
+    p.hsetnx(this.k("refcodes"), code, owner);
+    p.hget(this.k("refcodes"), code);
+    const [, current] = await p.exec();
+    return String(current ?? owner);
+  }
+  async setRefCode(code, owner) {
+    await this.redis.hset(this.k("refcodes"), { [code]: owner });
+  }
+  async lookupRefCode(code) {
+    const owner = await this.redis.hget(this.k("refcodes"), code);
+    return owner == null ? null : String(owner);
+  }
+  async recordWin(week, boardId, win, info) {
+    await this.redis.eval(
+      BEST_WIN_LUA,
+      [this.k("lb", "wins", week), this.k("lb", "wins", week, "info")],
+      [boardId, String(win), JSON.stringify(info), String(BOARD_TTL_S)]
+    );
+  }
+  async recordWager(week, boardId, bet, info) {
+    const z = this.k("lb", "wagers", week);
+    const infoKey = this.k("lb", "wagers", week, "info");
+    const spins = this.k("lb", "wagers", week, "spins");
+    const first = this.k("lb", "wagers", week, "first");
+    const p = this.redis.pipeline();
+    p.zincrby(z, bet, boardId);
+    p.hincrby(spins, boardId, 1);
+    p.hsetnx(first, boardId, info.ts);
+    p.hset(infoKey, { [boardId]: JSON.stringify(info) });
+    for (const key of [z, infoKey, spins, first]) p.expire(key, BOARD_TTL_S);
+    await p.exec();
+  }
+  async top(board, week, count) {
+    const raw = await this.redis.zrange(this.k("lb", board, week), 0, count - 1, {
+      rev: true,
+      withScores: true
+    });
+    const ids = [];
+    const scores = [];
+    for (let i = 0; i < raw.length; i += 2) {
+      ids.push(String(raw[i]));
+      scores.push(Number(raw[i + 1]));
+    }
+    if (ids.length === 0) return [];
+    const p = this.redis.pipeline();
+    p.hmget(this.k("lb", board, week, "info"), ...ids);
+    if (board === "wagers") {
+      p.hmget(this.k("lb", board, week, "spins"), ...ids);
+      p.hmget(this.k("lb", board, week, "first"), ...ids);
+    }
+    const [infos, spins, firsts] = await p.exec();
+    return ids.flatMap((boardId, i) => {
+      const info = infos?.[boardId];
+      if (!info) return [];
+      const row = { ...info, boardId, score: scores[i] };
+      if (board === "wagers") {
+        row.spins = Number(spins?.[boardId] ?? 0);
+        row.ts = Number(firsts?.[boardId] ?? info.ts);
+      }
+      return [row];
+    });
+  }
+  async rank(board, week, boardId) {
+    const p = this.redis.pipeline();
+    p.zrevrank(this.k("lb", board, week), boardId);
+    p.zscore(this.k("lb", board, week), boardId);
+    const [rank, score] = await p.exec();
+    return rank == null ? null : { rank: rank + 1, score: Number(score ?? 0) };
+  }
+};
 var JsonStore = class {
   data = /* @__PURE__ */ new Map();
   file;
-  constructor(filename) {
-    const dir = process.env.VERCEL ? "/tmp" : process.cwd();
+  constructor(filename, dir) {
+    fs.mkdirSync(dir, { recursive: true });
     this.file = path.join(dir, filename);
     this.load();
   }
   load() {
-    if (fs.existsSync(this.file)) {
-      try {
-        const json = fs.readFileSync(this.file, "utf-8");
-        const parsed = JSON.parse(json);
-        for (const key in parsed) {
-          this.data.set(key, parsed[key]);
-        }
-      } catch (e) {
-        console.error("Failed to load store", this.file, e);
-      }
+    if (!fs.existsSync(this.file)) return;
+    try {
+      const parsed = JSON.parse(fs.readFileSync(this.file, "utf-8"));
+      for (const key in parsed) this.data.set(key, parsed[key]);
+    } catch (e) {
+      console.error("Failed to load store", this.file, e);
     }
   }
   save() {
-    const obj = Object.fromEntries(this.data);
-    fs.writeFileSync(this.file, JSON.stringify(obj, null, 2));
+    fs.writeFileSync(this.file, JSON.stringify(Object.fromEntries(this.data), null, 2));
   }
   get(key) {
     return this.data.get(key);
@@ -2154,33 +3079,120 @@ var JsonStore = class {
     this.data.set(key, value);
     this.save();
   }
-  values() {
-    return Array.from(this.data.values());
+  entries() {
+    return Array.from(this.data.entries());
   }
   delete(key) {
     this.data.delete(key);
     this.save();
   }
 };
+var JsonStorage = class {
+  local = new KeyedMutex();
+  held = /* @__PURE__ */ new Map();
+  players;
+  credits;
+  refs;
+  boards;
+  waitMs;
+  constructor(dir, opts = {}) {
+    this.players = new JsonStore("players.json", dir);
+    this.credits = new JsonStore("credits.json", dir);
+    this.refs = new JsonStore("refs.json", dir);
+    this.boards = new JsonStore("boards.json", dir);
+    this.waitMs = opts.waitMs ?? DEFAULT_WAIT_MS;
+  }
+  async acquire(id) {
+    const unlockLocal = await this.local.lock(id, this.waitMs);
+    const token = crypto2.randomUUID();
+    this.held.set(id, token);
+    return { id, token, unlockLocal };
+  }
+  async release(lock) {
+    if (this.held.get(lock.id) === lock.token) this.held.delete(lock.id);
+    lock.unlockLocal();
+  }
+  async load(id) {
+    const player = this.players.get(id);
+    return {
+      player: player ? structuredClone(player) : null,
+      credits: { ...NO_CREDITS, ...this.credits.get(id) }
+    };
+  }
+  async save(lock, player, consumed) {
+    if (this.held.get(lock.id) !== lock.token) throw busy();
+    this.players.set(lock.id, structuredClone(player));
+    if (consumed.balance || consumed.refCount) {
+      const cur = { ...NO_CREDITS, ...this.credits.get(lock.id) };
+      this.credits.set(lock.id, { balance: cur.balance - consumed.balance, refCount: cur.refCount - consumed.refCount });
+    }
+  }
+  async addCredits(id, credits) {
+    const cur = { ...NO_CREDITS, ...this.credits.get(id) };
+    this.credits.set(id, { balance: cur.balance + credits.balance, refCount: cur.refCount + credits.refCount });
+  }
+  async claimRefCode(code, owner) {
+    const cur = this.refs.get(code);
+    if (cur) return cur;
+    this.refs.set(code, owner);
+    return owner;
+  }
+  async setRefCode(code, owner) {
+    this.refs.set(code, owner);
+  }
+  async lookupRefCode(code) {
+    return this.refs.get(code) ?? null;
+  }
+  boardKey(board, week, boardId) {
+    return `${board}:${week}:${boardId}`;
+  }
+  async recordWin(week, boardId, win, info) {
+    const key = this.boardKey("wins", week, boardId);
+    const cur = this.boards.get(key);
+    if (cur && cur.score >= win) return;
+    this.boards.set(key, { score: win, spins: 0, info });
+  }
+  async recordWager(week, boardId, bet, info) {
+    const key = this.boardKey("wagers", week, boardId);
+    const cur = this.boards.get(key);
+    this.boards.set(key, {
+      score: Math.min((cur?.score ?? 0) + bet, Number.MAX_SAFE_INTEGER),
+      spins: (cur?.spins ?? 0) + 1,
+      info: { ...info, ts: cur?.info.ts ?? info.ts }
+    });
+  }
+  sorted(board, week) {
+    const prefix = `${board}:${week}:`;
+    return this.boards.entries().filter(([key]) => key.startsWith(prefix)).map(([key, e]) => ({
+      ...e.info,
+      boardId: key.slice(prefix.length),
+      score: e.score,
+      spins: board === "wagers" ? e.spins : void 0
+    })).sort((a, b) => b.score - a.score || a.ts - b.ts);
+  }
+  async top(board, week, count) {
+    return this.sorted(board, week).slice(0, count);
+  }
+  async rank(board, week, boardId) {
+    const all = this.sorted(board, week);
+    const idx = all.findIndex((r) => r.boardId === boardId);
+    return idx < 0 ? null : { rank: idx + 1, score: all[idx].score };
+  }
+};
 
 // server/player-store.ts
-import crypto2 from "crypto";
-var HttpError = class extends Error {
-  constructor(status, code, message) {
-    super(message);
-    this.status = status;
-    this.code = code;
-  }
-  status;
-  code;
-};
-var playersStore = new JsonStore("players.json");
-var boardStore = new JsonStore("boardMeta.json");
-var boardEntriesStore = new JsonStore("boardEntries.json");
-var wagerEntriesStore = new JsonStore("wagerEntries.json");
-var refStore = new JsonStore("refs.json");
+import crypto3 from "crypto";
+var GUEST_PREFIX = "g:";
+var USER_PREFIX = "u:";
+var GUEST_ID_RE = /^[A-Za-z0-9-]{8,64}$/;
+function isValidGuestId(id) {
+  return GUEST_ID_RE.test(id);
+}
+function isValidGuestSecret(secret) {
+  return secret.length >= 32 && secret.length <= 128;
+}
 function hashStr2(text) {
-  return crypto2.createHash("sha256").update(text).digest("hex");
+  return crypto3.createHash("sha256").update(text).digest("hex");
 }
 function freshPlayer(id, now) {
   return {
@@ -2201,7 +3213,7 @@ function freshPlayer(id, now) {
     displayName: null,
     guestSecretHash: null,
     mergedInto: null,
-    boardId: crypto2.randomUUID(),
+    boardId: crypto3.randomUUID(),
     boardClaimWeek: null,
     wagerClaimWeek: null,
     vipPoints: 0,
@@ -2214,61 +3226,154 @@ function freshPlayer(id, now) {
   };
 }
 var PlayerService = class {
-  constructor(playerId) {
-    this.playerId = playerId;
+  constructor(storage, identity, rng = secureRng) {
+    this.storage = storage;
+    this.identity = identity;
+    this.rng = rng;
   }
-  playerId;
+  storage;
+  identity;
+  rng;
+  d = null;
+  consumed = { ...NO_CREDITS };
+  /** Writes to other players (merged guest profiles), committed after this player. */
+  extraWrites = [];
+  extraLocks = [];
+  /** Shared-state updates (leaderboards, referral credits) applied after the player is saved. */
+  after = [];
+  get playerId() {
+    return this.identity.playerId;
+  }
+  async handle(route, body) {
+    const lock = await this.storage.acquire(this.playerId);
+    try {
+      const { player, credits } = await this.storage.load(this.playerId);
+      this.d = player;
+      if (player && !player.mergedInto) this.authorize(player);
+      if (player && !player.mergedInto) this.applyCredits(player, credits);
+      const result = await this.dispatch(route, body);
+      if (this.d && !this.d.mergedInto) await this.storage.save(lock, this.d, this.consumed);
+      for (const w of this.extraWrites) await this.storage.save(w.lock, w.player, w.consumed);
+      for (const fn of this.after) await fn();
+      return result;
+    } finally {
+      for (const l of this.extraLocks) await this.storage.release(l).catch(() => void 0);
+      await this.storage.release(lock);
+    }
+  }
+  authorize(player) {
+    if (!this.identity.isGuest) return;
+    const secret = this.identity.guestSecret ?? "";
+    if (!player.guestSecretHash || hashStr2(secret) !== player.guestSecretHash) {
+      throw new HttpError(401, "bad_guest", "Guest credentials do not match");
+    }
+  }
+  applyCredits(player, credits) {
+    if (!credits.balance && !credits.refCount) return;
+    player.balance += credits.balance;
+    player.refCount = (player.refCount ?? 0) + credits.refCount;
+    this.consumed = { ...credits };
+  }
+  async dispatch(route, body) {
+    switch (route) {
+      case "/session":
+        return this.session(body);
+      case "/spin":
+        return this.spin(body);
+      case "/bonus":
+        return this.collectBonus();
+      case "/wheel":
+        return this.spinWheel();
+      case "/store":
+        return this.claimPack(String(body.packId ?? ""));
+      case "/missions":
+        return this.claimMission(body);
+      case "/streak":
+        return this.claimDailyStreak();
+      case "/vip":
+        return this.claimVipGift();
+      case "/referral":
+        return this.claimReferral(body);
+      case "/collectionClaim":
+        return this.claimSetReward(body);
+      case "/leaderboard":
+        return this.getLeaderboard(body.boardId === "wagers" ? "wagers" : "wins");
+      case "/leaderboardClaim":
+        return this.claimBoardReward(body.boardId === "wagers" ? "wagers" : "wins");
+      case "/settings":
+        return this.updateSettings(body);
+      case "/tutorial":
+        return this.setTutorial(body.done !== false);
+      default:
+        throw new HttpError(404, "not_found", "Route not found");
+    }
+  }
   get data() {
-    const d = playersStore.get(this.playerId);
+    const d = this.d;
     if (!d) throw new HttpError(409, "no_session", "Start a session first");
     if (d.mergedInto) throw new HttpError(410, "merged", "This guest profile was moved to an account");
     return d;
   }
-  save() {
-    playersStore.set(this.playerId, this.data);
-  }
-  async verifyGuest(secret) {
-    const d = playersStore.get(this.playerId);
-    if (!d) return;
-    if (!d.guestSecretHash || hashStr2(secret) !== d.guestSecretHash) {
-      throw new HttpError(401, "bad_guest", "Guest credentials do not match");
-    }
-  }
-  async session(isGuest, guestSecret, body) {
+  async session(body) {
     const now = Date.now();
+    const { isGuest } = this.identity;
     const displayName = typeof body.displayName === "string" ? body.displayName.slice(0, 40) : null;
-    let d = playersStore.get(this.playerId);
-    if (d?.mergedInto) {
+    if (this.d?.mergedInto) {
       throw new HttpError(410, "merged", "This guest profile was moved to an account");
     }
-    if (!d) {
-      if (isGuest && guestSecret.length < 32) throw new HttpError(400, "bad_guest", "Invalid guest credentials");
-      const imported = body.import;
-      const next = imported ? { ...imported, id: this.playerId, guestSecretHash: null, mergedInto: null } : freshPlayer(this.playerId, now);
-      if (isGuest) next.guestSecretHash = hashStr2(guestSecret);
-      playersStore.set(this.playerId, next);
-      d = next;
-    } else if (isGuest) {
-      await this.verifyGuest(guestSecret);
+    let merged = false;
+    if (!this.d) {
+      let next;
+      const imported = isGuest ? null : await this.importGuest(body.import);
+      if (imported) {
+        next = { ...imported, id: this.playerId, guestSecretHash: null, mergedInto: null };
+        merged = true;
+        if (next.refCode) this.after.push(() => this.storage.setRefCode(next.refCode, this.playerId));
+      } else {
+        next = freshPlayer(this.playerId, now);
+      }
+      if (isGuest) next.guestSecretHash = hashStr2(this.identity.guestSecret ?? "");
+      this.d = next;
     }
+    const d = this.d;
     if (!isGuest && displayName) d.displayName = displayName;
-    if (!d.boardId) d.boardId = crypto2.randomUUID();
+    if (!d.boardId) d.boardId = crypto3.randomUUID();
     this.ensureMissions(d);
-    this.ensureCode(d);
-    this.save();
-    this.registerCode(d);
-    return { player: this.publicPlayer(isGuest), merged: Boolean(body.import) };
+    if (!merged) await this.ensureCode(d);
+    return { player: this.publicPlayer(), merged };
   }
-  ensureCode(d) {
-    if (!d.refCode) {
-      d.refCode = newReferralCode();
-      this.save();
+  /**
+   * Moves an existing server-side guest profile into this signed-in account. The
+   * client only names the guest and proves it owns it; the data comes from storage.
+   */
+  async importGuest(raw) {
+    if (!raw || typeof raw !== "object") return null;
+    const req = raw;
+    const guestId = typeof req.guestId === "string" ? req.guestId : "";
+    const guestSecret = typeof req.guestSecret === "string" ? req.guestSecret : "";
+    if (!isValidGuestId(guestId) || !isValidGuestSecret(guestSecret)) return null;
+    const guestKey = GUEST_PREFIX + guestId;
+    const lock = await this.storage.acquire(guestKey);
+    this.extraLocks.push(lock);
+    const { player: guest, credits } = await this.storage.load(guestKey);
+    if (!guest || guest.mergedInto || !guest.guestSecretHash || hashStr2(guestSecret) !== guest.guestSecretHash) {
+      return null;
     }
-    return d.refCode;
+    const copy = structuredClone(guest);
+    copy.balance += credits.balance;
+    copy.refCount = (copy.refCount ?? 0) + credits.refCount;
+    this.extraWrites.push({ lock, player: { ...guest, mergedInto: this.playerId }, consumed: credits });
+    return copy;
   }
-  registerCode(d) {
-    if (!d.refCode) return;
-    refStore.set(d.refCode, { owner: this.playerId, name: this.boardName(d) });
+  /** Makes sure the player owns a unique, registered invite code. */
+  async ensureCode(d) {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      d.refCode ??= newReferralCode();
+      const owner = await this.storage.claimRefCode(d.refCode, this.playerId);
+      if (owner === this.playerId) return;
+      d.refCode = newReferralCode();
+    }
+    throw new HttpError(503, "server_busy", "Please try again in a moment");
   }
   boardName(d) {
     if (d.displayName) return d.displayName;
@@ -2287,8 +3392,7 @@ var PlayerService = class {
     claimed.push(setId);
     d.setClaimed = claimed;
     d.balance += set2.reward;
-    this.save();
-    return { amount: set2.reward, setId, player: this.publicPlayer(null) };
+    return { amount: set2.reward, setId, player: this.publicPlayer() };
   }
   async claimReferral(body) {
     const d = this.data;
@@ -2298,30 +3402,13 @@ var PlayerService = class {
     }
     const code = String(body.code ?? "").trim().toUpperCase().slice(0, 12);
     if (!/^[A-Z2-9]{6,12}$/.test(code)) throw new HttpError(400, "bad_code", "That invite code doesn't look right");
-    this.ensureCode(d);
-    const rec = refStore.get(code);
-    const owner = rec?.owner ?? "";
+    const owner = await this.storage.lookupRefCode(code);
     if (!owner) throw new HttpError(404, "unknown_code", "Invite code not found");
     if (owner === this.playerId) throw new HttpError(400, "own_code", "You can't use your own invite code");
     d.refBy = owner;
     d.balance += REFERRAL_WELCOME;
-    this.save();
-    const inviter = playersStore.get(owner);
-    if (inviter) {
-      if (inviter.mergedInto) {
-        const accountInviter = playersStore.get(inviter.mergedInto);
-        if (accountInviter) {
-          accountInviter.refCount = (accountInviter.refCount ?? 0) + 1;
-          accountInviter.balance += REFERRAL_PER_FRIEND;
-          playersStore.set(inviter.mergedInto, accountInviter);
-        }
-      } else {
-        inviter.refCount = (inviter.refCount ?? 0) + 1;
-        inviter.balance += REFERRAL_PER_FRIEND;
-        playersStore.set(owner, inviter);
-      }
-    }
-    return { amount: REFERRAL_WELCOME, player: this.publicPlayer(null) };
+    this.after.push(() => this.storage.addCredits(owner, { balance: REFERRAL_PER_FRIEND, refCount: 1 }));
+    return { amount: REFERRAL_WELCOME, player: this.publicPlayer() };
   }
   async spin(body) {
     const d = this.data;
@@ -2363,7 +3450,7 @@ var PlayerService = class {
       outcome = { stops: [], ...evaluateGrid(cfg, cfg.tutorialGrid, bet, 1) };
       d.tutorialScriptUsed = true;
     } else {
-      outcome = playSpin(cfg, secureRng, bet, multiplier);
+      outcome = playSpin(cfg, this.rng, bet, multiplier);
     }
     d.balance += outcome.totalWin;
     d.totalSpins += 1;
@@ -2396,7 +3483,7 @@ var PlayerService = class {
       if (awarded > 0) trackMission(dm, "freeSpins", 1);
       d.vipPoints = Math.min(Number.MAX_SAFE_INTEGER, (d.vipPoints ?? 0) + pointsForWager(bet));
       d.cards ??= {};
-      const drop = rollCardDrop(secureRng, d.cards);
+      const drop = rollCardDrop(this.rng, d.cards);
       if (drop) {
         const duplicate = (d.cards[drop.id] ?? 0) > 0;
         d.cards[drop.id] = (d.cards[drop.id] ?? 0) + 1;
@@ -2419,13 +3506,16 @@ var PlayerService = class {
     trackMission(dm, "win", outcome.totalWin);
     if (tier !== "none") trackMission(dm, "bigWin", 1);
     const levelUps = isFreeSpin ? [] : this.applyXp(d, xpForBet(bet));
+    const now = Date.now();
+    const week = weekKey(now);
+    const info = { name: this.boardName(d), level: d.level, machine: machineId, vip: tierFor(d.vipPoints ?? 0).name, ts: now };
     if (outcome.totalWin >= bet * 2) {
-      this.reportBoardWin(d, machineId, outcome.totalWin);
+      const win = outcome.totalWin;
+      this.after.push(() => this.storage.recordWin(week, d.boardId, win, info));
     }
     if (!isFreeSpin) {
-      this.reportWager(d, machineId, bet);
+      this.after.push(() => this.storage.recordWager(week, d.boardId, bet, info));
     }
-    this.save();
     return {
       outcome: {
         grid: outcome.grid,
@@ -2446,7 +3536,7 @@ var PlayerService = class {
       levelUps,
       cardDrop,
       scripted: useScript,
-      player: this.publicPlayer(null)
+      player: this.publicPlayer()
     };
   }
   applyXp(d, gained) {
@@ -2476,15 +3566,14 @@ var PlayerService = class {
     d.balance += amount;
     d.nextBonusAt = now + BONUS_INTERVAL_MS;
     trackMission(this.ensureMissions(d), "bonus", 1);
-    this.save();
-    return { amount, player: this.publicPlayer(null) };
+    return { amount, player: this.publicPlayer() };
   }
   async spinWheel() {
     const d = this.data;
     const now = Date.now();
     if (now < d.nextWheelAt) throw new HttpError(409, "not_ready", "The wheel is not ready yet");
     const totalWeight = WHEEL_SEGMENTS.reduce((s, seg) => s + seg.weight, 0);
-    let roll = secureRng(totalWeight);
+    let roll = this.rng(totalWeight);
     let index = 0;
     for (let i = 0; i < WHEEL_SEGMENTS.length; i++) {
       roll -= WHEEL_SEGMENTS[i].weight;
@@ -2496,8 +3585,7 @@ var PlayerService = class {
     const amount = Math.round(WHEEL_SEGMENTS[index].amount * wheelMultiplier(d.level));
     d.balance += amount;
     d.nextWheelAt = now + WHEEL_INTERVAL_MS;
-    this.save();
-    return { index, amount, player: this.publicPlayer(null) };
+    return { index, amount, player: this.publicPlayer() };
   }
   async claimPack(packId) {
     const d = this.data;
@@ -2507,8 +3595,7 @@ var PlayerService = class {
     if (now < (d.storeReadyAt[pack.id] ?? 0)) throw new HttpError(409, "not_ready", "This pack is cooling down");
     d.balance += pack.amount;
     d.storeReadyAt[pack.id] = now + pack.cooldownMs;
-    this.save();
-    return { amount: pack.amount, player: this.publicPlayer(null) };
+    return { amount: pack.amount, player: this.publicPlayer() };
   }
   ensureMissions(d) {
     const now = Date.now();
@@ -2535,95 +3622,52 @@ var PlayerService = class {
       amount = mission.reward;
     }
     d.balance += amount;
-    this.save();
-    return { amount, player: this.publicPlayer(null) };
-  }
-  checkBoardWeek() {
-    const now = Date.now();
-    const week = weekKey(now);
-    const meta = boardStore.get("meta");
-    if (!meta || meta.week !== week) {
-      boardEntriesStore.values().forEach((e) => boardEntriesStore.delete(e.boardId));
-      wagerEntriesStore.values().forEach((e) => wagerEntriesStore.delete(e.boardId));
-      boardStore.set("meta", { week });
-    }
-    return week;
-  }
-  reportBoardWin(d, machineId, win) {
-    this.checkBoardWeek();
-    const current = boardEntriesStore.get(d.boardId);
-    if (current && current.win >= win) return;
-    boardEntriesStore.set(d.boardId, {
-      boardId: d.boardId,
-      name: this.boardName(d),
-      level: d.level,
-      win,
-      machine: machineId,
-      ts: Date.now(),
-      vip: tierFor(d.vipPoints ?? 0).name
-    });
-  }
-  reportWager(d, machineId, bet) {
-    this.checkBoardWeek();
-    const current = wagerEntriesStore.get(d.boardId);
-    wagerEntriesStore.set(d.boardId, {
-      boardId: d.boardId,
-      name: this.boardName(d),
-      level: d.level,
-      win: Math.min((current?.win ?? 0) + bet, Number.MAX_SAFE_INTEGER),
-      machine: machineId,
-      ts: current?.ts ?? Date.now(),
-      spins: (current?.spins ?? 0) + 1,
-      vip: tierFor(d.vipPoints ?? 0).name
-    });
+    return { amount, player: this.publicPlayer() };
   }
   async getLeaderboard(board) {
     const d = this.data;
-    const week = this.checkBoardWeek();
-    const store = board === "wagers" ? wagerEntriesStore : boardEntriesStore;
-    const all = store.values().sort((a, b) => b.win - a.win || a.ts - b.ts);
-    const idx = all.findIndex((e) => e.boardId === d.boardId);
+    const now = Date.now();
+    const week = weekKey(now);
+    const [rows, you] = await Promise.all([
+      this.storage.top(board, week, BOARD_SIZE),
+      this.storage.rank(board, week, d.boardId)
+    ]);
     return {
       board,
       week,
-      endsAt: weekEnd(Date.now()),
-      entries: all.slice(0, BOARD_SIZE).map((e, i) => ({
+      endsAt: weekEnd(now),
+      entries: rows.map((e, i) => ({
         rank: i + 1,
         name: e.name,
         level: e.level,
-        win: e.win,
-        wager: board === "wagers" ? e.win : void 0,
+        win: e.score,
+        wager: board === "wagers" ? e.score : void 0,
         spins: board === "wagers" ? e.spins ?? 0 : void 0,
         machine: e.machine,
         ts: e.ts,
         vip: e.vip
       })),
-      you: idx >= 0 ? { rank: idx + 1, win: all[idx].win } : null,
+      you: you ? { rank: you.rank, win: you.score } : null,
       rewardTiers: REWARD_TIERS,
       champions: null
     };
   }
   async claimBoardReward(board) {
     const d = this.data;
-    const now = Date.now();
-    const week = weekKey(now);
+    const week = weekKey(Date.now());
     const wagered = board === "wagers";
     if ((wagered ? d.wagerClaimWeek : d.boardClaimWeek) === week) {
       throw new HttpError(409, "already_claimed", "This week's reward is already collected");
     }
-    this.checkBoardWeek();
-    const store = wagered ? wagerEntriesStore : boardEntriesStore;
-    const all = store.values().sort((a, b) => b.win - a.win || a.ts - b.ts);
-    const idx = all.findIndex((e) => e.boardId === d.boardId);
-    const rank = idx >= 0 ? idx + 1 : null;
-    if (!rank || rank < 1 || rank > BOARD_SIZE) throw new HttpError(409, "not_ready", "Reach a paid rank to claim a weekly prize");
+    const standing = await this.storage.rank(board, week, d.boardId);
+    const rank = standing?.rank ?? null;
+    if (!rank || rank > BOARD_SIZE) throw new HttpError(409, "not_ready", "Reach a paid rank to claim a weekly prize");
     const amount = boardReward(rank);
     if (amount <= 0) throw new HttpError(409, "not_ready", "No reward for this rank");
     d.balance += amount;
     if (wagered) d.wagerClaimWeek = week;
     else d.boardClaimWeek = week;
-    this.save();
-    return { amount, rank, board, player: this.publicPlayer(null) };
+    return { amount, rank, board, player: this.publicPlayer() };
   }
   async claimVipGift() {
     const d = this.data;
@@ -2633,8 +3677,7 @@ var PlayerService = class {
     const amount = vipStatus(d.vipPoints ?? 0, d.vipGiftDay ?? null, now).gift;
     d.vipGiftDay = day;
     d.balance += amount;
-    this.save();
-    return { amount, player: this.publicPlayer(null) };
+    return { amount, player: this.publicPlayer() };
   }
   async claimDailyStreak() {
     const d = this.data;
@@ -2642,27 +3685,23 @@ var PlayerService = class {
     const res = claimStreak(d.streak, d.level, Date.now());
     if (!res) throw new HttpError(409, "already_claimed", "Today's reward is already collected");
     d.balance += res.amount;
-    this.save();
-    return { amount: res.amount, day: res.day, player: this.publicPlayer(null) };
+    return { amount: res.amount, day: res.day, player: this.publicPlayer() };
   }
   async updateSettings(body) {
     const d = this.data;
     if (typeof body.music === "boolean") d.settings.music = body.music;
     if (typeof body.sfx === "boolean") d.settings.sfx = body.sfx;
-    this.save();
-    return { player: this.publicPlayer(null) };
+    return { player: this.publicPlayer() };
   }
   async setTutorial(done) {
     const d = this.data;
     d.tutorialDone = done;
-    this.save();
-    return { player: this.publicPlayer(null) };
+    return { player: this.publicPlayer() };
   }
-  publicPlayer(isGuest) {
+  publicPlayer() {
     const d = this.data;
-    const name = this.playerId;
     return {
-      identity: isGuest === null ? name.startsWith("g:") ? "guest" : "user" : isGuest ? "guest" : "user",
+      identity: this.identity.isGuest ? "guest" : "user",
       displayName: d.displayName,
       balance: d.balance,
       level: d.level,
@@ -2722,8 +3761,8 @@ __export(error_exports, {
   UrlError: () => UrlError
 });
 var UpstashError = class extends Error {
-  constructor(message, options) {
-    super(message, options);
+  constructor(message2, options) {
+    super(message2, options);
     this.name = "UpstashError";
   }
 };
@@ -2775,9 +3814,9 @@ function deserializeScanWithTypesResponse(result) {
 }
 function mergeHeaders(...headers) {
   const merged = {};
-  for (const header of headers) {
-    if (!header) continue;
-    for (const [key, value] of Object.entries(header)) {
+  for (const header2 of headers) {
+    if (!header2) continue;
+    for (const [key, value] of Object.entries(header2)) {
       if (value !== void 0 && value !== null) {
         merged[key] = value;
       }
@@ -2916,14 +3955,14 @@ var HttpClient = class {
     }
     if (isEventStream && req && req.onMessage && res.body) {
       const reader = res.body.getReader();
-      const decoder = new TextDecoder();
+      const decoder2 = new TextDecoder();
       (async () => {
         try {
           let buffer = "";
           while (true) {
             const { value, done } = await reader.read();
             if (done) break;
-            buffer += decoder.decode(value, { stream: true });
+            buffer += decoder2.decode(value, { stream: true });
             const lines = buffer.split("\n");
             buffer = lines.pop() || "";
             if (buffer.length > MAX_BUFFER_SIZE) {
@@ -2964,11 +4003,11 @@ var HttpClient = class {
     if (this.options.responseEncoding === "base64") {
       if (Array.isArray(body)) {
         return body.map(({ result: result2, error: error2 }) => ({
-          result: decode(result2),
+          result: decode2(result2),
           error: error2
         }));
       }
-      const result = decode(body.result);
+      const result = decode2(body.result);
       return { result, error: body.error };
     }
     return body;
@@ -2989,7 +4028,7 @@ function base64decode(b64) {
   }
   return dec;
 }
-function decode(raw) {
+function decode2(raw) {
   let result = void 0;
   switch (typeof raw) {
     case "undefined": {
@@ -3002,7 +4041,7 @@ function decode(raw) {
     case "object": {
       if (Array.isArray(raw)) {
         result = raw.map(
-          (v) => typeof v === "string" ? base64decode(v) : Array.isArray(v) ? v.map((element) => decode(element)) : v
+          (v) => typeof v === "string" ? base64decode(v) : Array.isArray(v) ? v.map((element) => decode2(element)) : v
         );
       } else {
         result = null;
@@ -6784,35 +7823,35 @@ var EXCLUDE_COMMANDS = /* @__PURE__ */ new Set([
   "exec"
 ]);
 function createAutoPipelineProxy(_redis, namespace = "root") {
-  const redis2 = _redis;
-  if (!redis2.autoPipelineExecutor) {
-    redis2.autoPipelineExecutor = new AutoPipelineExecutor(redis2);
+  const redis = _redis;
+  if (!redis.autoPipelineExecutor) {
+    redis.autoPipelineExecutor = new AutoPipelineExecutor(redis);
   }
-  return new Proxy(redis2, {
-    get: (redis22, command) => {
+  return new Proxy(redis, {
+    get: (redis2, command) => {
       if (command === "pipelineCounter") {
-        return redis22.autoPipelineExecutor.pipelineCounter;
+        return redis2.autoPipelineExecutor.pipelineCounter;
       }
       if (namespace === "root" && command === "json") {
-        return createAutoPipelineProxy(redis22, "json");
+        return createAutoPipelineProxy(redis2, "json");
       }
       if (namespace === "root" && command === "functions") {
-        return createAutoPipelineProxy(redis22, "functions");
+        return createAutoPipelineProxy(redis2, "functions");
       }
       if (namespace === "root") {
-        const commandInRedisButNotPipeline = command in redis22 && !(command in redis22.autoPipelineExecutor.pipeline);
+        const commandInRedisButNotPipeline = command in redis2 && !(command in redis2.autoPipelineExecutor.pipeline);
         const isCommandExcluded = EXCLUDE_COMMANDS.has(command);
         if (commandInRedisButNotPipeline || isCommandExcluded) {
-          return redis22[command];
+          return redis2[command];
         }
       }
-      const pipeline = redis22.autoPipelineExecutor.pipeline;
+      const pipeline = redis2.autoPipelineExecutor.pipeline;
       const targetFunction = namespace === "json" ? pipeline.json[command] : namespace === "functions" ? pipeline.functions[command] : pipeline[command];
       const isFunction = typeof targetFunction === "function";
       if (isFunction) {
         return (...args) => {
           const commandMode = READ_COMMANDS.has(command) ? "read" : "write";
-          return redis22.autoPipelineExecutor.withAutoPipeline(commandMode, (pipeline2) => {
+          return redis2.autoPipelineExecutor.withAutoPipeline(commandMode, (pipeline2) => {
             const targetFunction2 = namespace === "json" ? pipeline2.json[command] : namespace === "functions" ? pipeline2.functions[command] : pipeline2[command];
             targetFunction2(...args);
           });
@@ -6833,9 +7872,9 @@ var AutoPipelineExecutor = class {
   // only to make sure that proxy can work
   pipelineCounter = 0;
   // to keep track of how many times a pipeline was executed
-  constructor(redis2) {
-    this.redis = redis2;
-    this.pipeline = redis2.pipeline();
+  constructor(redis) {
+    this.redis = redis;
+    this.pipeline = redis.pipeline();
   }
   async withAutoPipeline(commandMode, executeWithPipeline) {
     const isRead = commandMode === "read";
@@ -6971,9 +8010,9 @@ var Subscriber = class extends EventTarget {
         const channel = messageData.slice(secondCommaIndex + 1, thirdCommaIndex);
         const messageStr = messageData.slice(thirdCommaIndex + 1);
         try {
-          const message = this.opts?.automaticDeserialization === false ? messageStr : JSON.parse(messageStr);
-          this.dispatchToListeners("pmessage", { pattern, channel, message });
-          this.dispatchToListeners(`pmessage:${pattern}`, { pattern, channel, message });
+          const message2 = this.opts?.automaticDeserialization === false ? messageStr : JSON.parse(messageStr);
+          this.dispatchToListeners("pmessage", { pattern, channel, message: message2 });
+          this.dispatchToListeners(`pmessage:${pattern}`, { pattern, channel, message: message2 });
         } catch (error) {
           this.dispatchToListeners("error", new Error(`Failed to parse message: ${error}`));
         }
@@ -6985,9 +8024,9 @@ var Subscriber = class extends EventTarget {
             const count = Number.parseInt(messageStr);
             this.dispatchToListeners(type, count);
           } else {
-            const message = this.opts?.automaticDeserialization === false ? messageStr : parseWithTryCatch(messageStr);
-            this.dispatchToListeners(type, { channel, message });
-            this.dispatchToListeners(`${type}:${channel}`, { channel, message });
+            const message2 = this.opts?.automaticDeserialization === false ? messageStr : parseWithTryCatch(messageStr);
+            this.dispatchToListeners(type, { channel, message: message2 });
+            this.dispatchToListeners(`${type}:${channel}`, { channel, message: message2 });
           }
         } catch (error) {
           this.dispatchToListeners("error", new Error(`Failed to parse message: ${error}`));
@@ -7077,8 +8116,8 @@ var Script = class {
   sha1;
   initPromise;
   redis;
-  constructor(redis2, script) {
-    this.redis = redis2;
+  constructor(redis, script) {
+    this.redis = redis;
     this.script = script;
     this.sha1 = "";
     void this.init(script);
@@ -7146,8 +8185,8 @@ var ScriptRO = class {
   sha1;
   initPromise;
   redis;
-  constructor(redis2, script) {
-    this.redis = redis2;
+  constructor(redis, script) {
+    this.redis = redis;
     this.sha1 = "";
     this.script = script;
     void this.init(script);
@@ -8511,126 +9550,119 @@ var Redis2 = class _Redis extends Redis {
   }
 };
 
+// server/redis.ts
+function redisFromEnv(prefix = "", env = process.env) {
+  const url = env[`${prefix}UPSTASH_REDIS_REST_URL`] ?? env[`${prefix}KV_REST_API_URL`];
+  const token = env[`${prefix}UPSTASH_REDIS_REST_TOKEN`] ?? env[`${prefix}KV_REST_API_TOKEN`];
+  return url && token ? new Redis2({ url, token }) : null;
+}
+
 // server/index.ts
-var redis = process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN ? new Redis2({ url: process.env.UPSTASH_REDIS_REST_URL, token: process.env.UPSTASH_REDIS_REST_TOKEN }) : null;
-var app = express();
-app.use(cors({ exposedHeaders: ["X-Guest-State"] }));
-app.use(express.json());
 function jackpotStateFn(now) {
   const base = 258471e5;
   const elapsed = now - 179112e7;
   const perSecond = 2750;
   return { value: base + Math.floor(elapsed / 1e3 * perSecond), perSecond, serverTime: now };
 }
-app.get("/~api/ping", (req, res) => {
-  res.json({ ok: true, now: Date.now() });
-});
-app.get("/~api/config", (req, res) => {
-  res.json({
-    machines: MACHINE_LISTINGS,
-    machineConfigs: Object.fromEntries(Object.values(MACHINES).map((m) => [m.id, publicMachine(m)])),
-    wheel: WHEEL_SEGMENTS.map((s) => s.amount),
-    store: STORE_PACKS,
-    cardSets: CARD_SETS,
-    jackpot: jackpotStateFn(Date.now())
+var PLAYER_ROUTES = /* @__PURE__ */ new Set([
+  "/session",
+  "/spin",
+  "/bonus",
+  "/wheel",
+  "/store",
+  "/missions",
+  "/streak",
+  "/vip",
+  "/referral",
+  "/collectionClaim",
+  "/leaderboard",
+  "/leaderboardClaim",
+  "/settings",
+  "/tutorial"
+]);
+var defaultStorage;
+function storageFromEnv() {
+  if (defaultStorage !== void 0) return defaultStorage;
+  const redis = redisFromEnv();
+  if (redis) defaultStorage = new RedisStorage(redis);
+  else if (process.env.VERCEL) defaultStorage = null;
+  else defaultStorage = new JsonStorage(process.env.DATA_DIR ?? path2.join(process.cwd(), ".data"));
+  return defaultStorage;
+}
+function header(req, name) {
+  const v = req.headers[name];
+  return typeof v === "string" ? v : "";
+}
+async function resolveIdentity(req, verifier) {
+  const auth = header(req, "authorization");
+  if (verifier && auth.startsWith("Bearer ")) {
+    const user = await verifier(auth.slice(7));
+    if (!user) throw new HttpError(401, "auth_invalid", "Your sign-in expired. Please sign in again.");
+    return { playerId: USER_PREFIX + user.sub, isGuest: false, guestSecret: null };
+  }
+  const guestId = header(req, "x-guest-id");
+  const guestSecret = header(req, "x-guest-secret");
+  if (!guestId || !guestSecret) throw new HttpError(401, "unauthorized", "Missing credentials");
+  if (!isValidGuestId(guestId) || !isValidGuestSecret(guestSecret)) {
+    throw new HttpError(400, "bad_guest", "Invalid guest credentials");
+  }
+  return { playerId: GUEST_PREFIX + guestId, isGuest: true, guestSecret };
+}
+function createApp(deps) {
+  const app2 = express();
+  app2.use(cors());
+  app2.use(express.json());
+  app2.get("/~api/ping", (_req, res) => {
+    res.json({ ok: true, now: Date.now() });
   });
-});
-app.post("/~api/:route", async (req, res) => {
-  const pathRoute = "/" + req.params.route;
-  const PLAYER_ROUTES = /* @__PURE__ */ new Set(["/session", "/spin", "/bonus", "/wheel", "/store", "/missions", "/streak", "/vip", "/referral", "/collectionClaim", "/leaderboard", "/leaderboardClaim", "/settings", "/tutorial"]);
-  if (!PLAYER_ROUTES.has(pathRoute)) {
-    return res.status(404).json({ error: "not_found", message: "Route not found" });
-  }
-  const guestId = req.headers["x-guest-id"];
-  const guestSecret = req.headers["x-guest-secret"];
-  if (!guestId || !guestSecret) {
-    return res.status(401).json({ error: "unauthorized", message: "Missing credentials" });
-  }
-  const stateHeader = req.headers["x-guest-state"];
-  if (stateHeader) {
+  app2.get("/~api/config", (_req, res) => {
+    res.json({
+      machines: MACHINE_LISTINGS,
+      machineConfigs: Object.fromEntries(Object.values(MACHINES).map((m) => [m.id, publicMachine(m)])),
+      wheel: WHEEL_SEGMENTS.map((s) => s.amount),
+      store: STORE_PACKS,
+      cardSets: CARD_SETS,
+      jackpot: jackpotStateFn(Date.now())
+    });
+  });
+  app2.post("/~api/:route", async (req, res) => {
+    const pathRoute = "/" + String(req.params.route);
+    if (!PLAYER_ROUTES.has(pathRoute)) {
+      res.status(404).json({ error: "not_found", message: "Route not found" });
+      return;
+    }
     try {
-      const stateStr = Buffer.from(stateHeader, "base64").toString("utf8");
-      playersStore.set(guestId, JSON.parse(stateStr));
-    } catch {
+      const storage = deps.storage();
+      if (!storage) throw new HttpError(503, "storage_unavailable", "The casino is under maintenance. Try again soon.");
+      const identity = await resolveIdentity(req, deps.verifier ?? null);
+      const body = req.body && typeof req.body === "object" ? req.body : {};
+      const service = new PlayerService(storage, identity, deps.rng);
+      res.json(await service.handle(pathRoute, body));
+    } catch (err) {
+      if (err instanceof HttpError) {
+        res.status(err.status).json({ error: err.code, message: err.message });
+      } else {
+        console.error("route error", pathRoute, err instanceof Error ? err.message : String(err));
+        res.status(500).json({ error: "server_error", message: "Something went wrong" });
+      }
     }
-  }
-  const service = new PlayerService(guestId);
-  try {
-    let result;
-    const body = req.body || {};
-    if (pathRoute !== "/session" && pathRoute !== "/leaderboard") {
-      await service.verifyGuest(guestSecret);
-    }
-    switch (pathRoute) {
-      case "/session":
-        result = await service.session(true, guestSecret, body);
-        break;
-      case "/spin":
-        result = await service.spin(body);
-        break;
-      case "/bonus":
-        result = await service.collectBonus();
-        break;
-      case "/wheel":
-        result = await service.spinWheel();
-        break;
-      case "/store":
-        result = await service.claimPack(body.packId);
-        break;
-      case "/missions":
-        result = await service.claimMission(body);
-        break;
-      case "/streak":
-        result = await service.claimDailyStreak();
-        break;
-      case "/vip":
-        result = await service.claimVipGift();
-        break;
-      case "/referral":
-        result = await service.claimReferral(body);
-        break;
-      case "/collectionClaim":
-        result = await service.claimSetReward(body);
-        break;
-      case "/leaderboard":
-        result = await service.getLeaderboard(body.boardId || "wins");
-        break;
-      case "/leaderboardClaim":
-        result = await service.claimBoardReward(body.boardId || "wins");
-        break;
-      case "/settings":
-        result = await service.updateSettings(body);
-        break;
-      case "/tutorial":
-        result = await service.setTutorial(body.done !== false);
-        break;
-    }
-    const updatedState = playersStore.get(guestId);
-    if (updatedState) {
-      res.setHeader("X-Guest-State", Buffer.from(JSON.stringify(updatedState)).toString("base64"));
-    }
-    res.json(result);
-  } catch (err) {
-    if (err instanceof HttpError) {
-      res.status(err.status).json({ error: err.code, message: err.message });
-    } else {
-      console.error("route error", pathRoute, err instanceof Error ? err.message : String(err));
-      res.status(500).json({ error: "server_error", message: "Something went wrong" });
-    }
-  }
-});
-app.use(express.static("dist"));
-app.get(/(.*)/, (req, res, next) => {
-  if (req.path.startsWith("/~api") || req.path === "/config" || req.path === "/ping") return next();
-  res.sendFile(path2.join(process.cwd(), "dist", "index.html"));
-});
+  });
+  app2.use(express.static("dist"));
+  app2.get(/(.*)/, (req, res, next) => {
+    if (req.path.startsWith("/~api") || req.path === "/config" || req.path === "/ping") return next();
+    res.sendFile(path2.join(process.cwd(), "dist", "index.html"));
+  });
+  return app2;
+}
+var app = createApp({ storage: storageFromEnv, verifier: verifierFromEnv() });
 var PORT = process.env.PORT || 8081;
-if (!process.env.VERCEL) {
+if (!process.env.VERCEL && !process.env.VITEST) {
   app.listen(PORT, () => {
     console.log(`Server listening on port ${PORT}`);
   });
 }
 var index_default = app;
 export {
+  createApp,
   index_default as default
 };

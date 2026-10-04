@@ -1,22 +1,24 @@
-// @ts-nocheck
-import express from 'express';
-import cors from 'cors';
-import path from 'path';
+import express, { type Request, type Response } from "express";
+import cors from "cors";
+import path from "path";
 import { CARD_SETS } from "./engine/collections.js";
 import { MACHINE_LISTINGS, MACHINES, publicMachine } from "./engine/machines.js";
 import { STORE_PACKS, WHEEL_SEGMENTS } from "./engine/progression.js";
-import { PlayerService, HttpError, playersStore } from "./player-store.js";
-import { jackpotState } from "./engine/types.js";
-import { Redis } from '@upstash/redis';
+import type { Rng } from "./engine/types.js";
+import { type TokenVerifier, verifierFromEnv } from "./auth.js";
+import { HttpError } from "./errors.js";
+import {
+  GUEST_PREFIX,
+  type Identity,
+  isValidGuestId,
+  isValidGuestSecret,
+  PlayerService,
+  USER_PREFIX,
+} from "./player-store.js";
+import { redisFromEnv } from "./redis.js";
+import { JsonStorage, RedisStorage, type Storage } from "./store.js";
 
-const redis = process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN
-  ? new Redis({ url: process.env.UPSTASH_REDIS_REST_URL, token: process.env.UPSTASH_REDIS_REST_TOKEN })
-  : null;
-
-const app = express();
-app.use(cors({ exposedHeaders: ['X-Guest-State'] }));
-app.use(express.json());
-
+/** Cosmetic, time-based jackpot display. It is not a real prize pool and nothing pays out from it. */
 function jackpotStateFn(now: number) {
   const base = 25847100000;
   const elapsed = now - 1791120000000;
@@ -24,96 +26,109 @@ function jackpotStateFn(now: number) {
   return { value: base + Math.floor((elapsed / 1000) * perSecond), perSecond, serverTime: now };
 }
 
-app.get('/~api/ping', (req, res) => {
-  res.json({ ok: true, now: Date.now() });
-});
+const PLAYER_ROUTES = new Set([
+  "/session", "/spin", "/bonus", "/wheel", "/store", "/missions", "/streak", "/vip",
+  "/referral", "/collectionClaim", "/leaderboard", "/leaderboardClaim", "/settings", "/tutorial",
+]);
 
-app.get('/~api/config', (req, res) => {
-  res.json({
-    machines: MACHINE_LISTINGS,
-    machineConfigs: Object.fromEntries(Object.values(MACHINES).map((m) => [m.id, publicMachine(m)])),
-    wheel: WHEEL_SEGMENTS.map((s) => s.amount),
-    store: STORE_PACKS,
-    cardSets: CARD_SETS,
-    jackpot: jackpotStateFn(Date.now()),
+export interface AppDeps {
+  /** Returns null when no durable storage is configured (requests then fail with 503). */
+  storage: () => Storage | null;
+  verifier?: TokenVerifier | null;
+  rng?: Rng;
+}
+
+/**
+ * Production storage: Upstash Redis. JSON files are only a local-dev fallback;
+ * on Vercel they would live in a per-instance /tmp, so we refuse to use them there.
+ */
+let defaultStorage: Storage | null | undefined;
+function storageFromEnv(): Storage | null {
+  if (defaultStorage !== undefined) return defaultStorage;
+  const redis = redisFromEnv();
+  if (redis) defaultStorage = new RedisStorage(redis);
+  else if (process.env.VERCEL) defaultStorage = null;
+  else defaultStorage = new JsonStorage(process.env.DATA_DIR ?? path.join(process.cwd(), ".data"));
+  return defaultStorage;
+}
+
+function header(req: Request, name: string): string {
+  const v = req.headers[name];
+  return typeof v === "string" ? v : "";
+}
+
+async function resolveIdentity(req: Request, verifier: TokenVerifier | null): Promise<Identity> {
+  const auth = header(req, "authorization");
+  if (verifier && auth.startsWith("Bearer ")) {
+    const user = await verifier(auth.slice(7));
+    if (!user) throw new HttpError(401, "auth_invalid", "Your sign-in expired. Please sign in again.");
+    return { playerId: USER_PREFIX + user.sub, isGuest: false, guestSecret: null };
+  }
+  const guestId = header(req, "x-guest-id");
+  const guestSecret = header(req, "x-guest-secret");
+  if (!guestId || !guestSecret) throw new HttpError(401, "unauthorized", "Missing credentials");
+  if (!isValidGuestId(guestId) || !isValidGuestSecret(guestSecret)) {
+    throw new HttpError(400, "bad_guest", "Invalid guest credentials");
+  }
+  return { playerId: GUEST_PREFIX + guestId, isGuest: true, guestSecret };
+}
+
+export function createApp(deps: AppDeps) {
+  const app = express();
+  app.use(cors());
+  app.use(express.json());
+
+  app.get("/~api/ping", (_req: Request, res: Response) => {
+    res.json({ ok: true, now: Date.now() });
   });
-});
 
-app.post('/~api/:route', async (req, res) => {
-  const pathRoute = '/' + req.params.route;
-  const PLAYER_ROUTES = new Set(["/session", "/spin", "/bonus", "/wheel", "/store", "/missions", "/streak", "/vip", "/referral", "/collectionClaim", "/leaderboard", "/leaderboardClaim", "/settings", "/tutorial"]);
-  
-  if (!PLAYER_ROUTES.has(pathRoute)) {
-    return res.status(404).json({ error: "not_found", message: "Route not found" });
-  }
+  app.get("/~api/config", (_req: Request, res: Response) => {
+    res.json({
+      machines: MACHINE_LISTINGS,
+      machineConfigs: Object.fromEntries(Object.values(MACHINES).map((m) => [m.id, publicMachine(m)])),
+      wheel: WHEEL_SEGMENTS.map((s) => s.amount),
+      store: STORE_PACKS,
+      cardSets: CARD_SETS,
+      jackpot: jackpotStateFn(Date.now()),
+    });
+  });
 
-  const guestId = req.headers['x-guest-id'] as string | undefined;
-  const guestSecret = req.headers['x-guest-secret'] as string | undefined;
-
-  if (!guestId || !guestSecret) {
-    return res.status(401).json({ error: "unauthorized", message: "Missing credentials" });
-  }
-
-  const stateHeader = req.headers['x-guest-state'] as string | undefined;
-  if (stateHeader) {
+  app.post("/~api/:route", async (req: Request, res: Response) => {
+    const pathRoute = "/" + String(req.params.route);
+    if (!PLAYER_ROUTES.has(pathRoute)) {
+      res.status(404).json({ error: "not_found", message: "Route not found" });
+      return;
+    }
     try {
-      const stateStr = Buffer.from(stateHeader, 'base64').toString('utf8');
-      playersStore.set(guestId, JSON.parse(stateStr));
-    } catch {
-      /* ignore bad state */
+      const storage = deps.storage();
+      if (!storage) throw new HttpError(503, "storage_unavailable", "The casino is under maintenance. Try again soon.");
+      const identity = await resolveIdentity(req, deps.verifier ?? null);
+      const body = (req.body && typeof req.body === "object" ? req.body : {}) as Record<string, unknown>;
+      const service = new PlayerService(storage, identity, deps.rng);
+      res.json(await service.handle(pathRoute, body));
+    } catch (err: unknown) {
+      if (err instanceof HttpError) {
+        res.status(err.status).json({ error: err.code, message: err.message });
+      } else {
+        console.error("route error", pathRoute, err instanceof Error ? err.message : String(err));
+        res.status(500).json({ error: "server_error", message: "Something went wrong" });
+      }
     }
-  }
+  });
 
-  const service = new PlayerService(guestId);
-  try {
-    let result: any;
-    const body = req.body || {};
+  app.use(express.static("dist"));
+  app.get(/(.*)/, (req: Request, res: Response, next: () => void) => {
+    if (req.path.startsWith("/~api") || req.path === "/config" || req.path === "/ping") return next();
+    res.sendFile(path.join(process.cwd(), "dist", "index.html"));
+  });
 
-    if (pathRoute !== "/session" && pathRoute !== "/leaderboard") {
-      await service.verifyGuest(guestSecret);
-    }
+  return app;
+}
 
-    switch (pathRoute) {
-      case "/session": result = await service.session(true, guestSecret, body); break;
-      case "/spin": result = await service.spin(body); break;
-      case "/bonus": result = await service.collectBonus(); break;
-      case "/wheel": result = await service.spinWheel(); break;
-      case "/store": result = await service.claimPack(body.packId); break;
-      case "/missions": result = await service.claimMission(body); break;
-      case "/streak": result = await service.claimDailyStreak(); break;
-      case "/vip": result = await service.claimVipGift(); break;
-      case "/referral": result = await service.claimReferral(body); break;
-      case "/collectionClaim": result = await service.claimSetReward(body); break;
-      case "/leaderboard": result = await service.getLeaderboard(body.boardId || "wins"); break;
-      case "/leaderboardClaim": result = await service.claimBoardReward(body.boardId || "wins"); break;
-      case "/settings": result = await service.updateSettings(body); break;
-      case "/tutorial": result = await service.setTutorial(body.done !== false); break;
-    }
-    
-    const updatedState = playersStore.get(guestId);
-    if (updatedState) {
-      res.setHeader("X-Guest-State", Buffer.from(JSON.stringify(updatedState)).toString('base64'));
-    }
-
-    res.json(result);
-  } catch (err: unknown) {
-    if (err instanceof HttpError) {
-      res.status(err.status).json({ error: err.code, message: err.message });
-    } else {
-      console.error("route error", pathRoute, err instanceof Error ? err.message : String(err));
-      res.status(500).json({ error: "server_error", message: "Something went wrong" });
-    }
-  }
-});
-
-app.use(express.static("dist"));
-app.get(/(.*)/, (req, res, next) => {
-  if (req.path.startsWith("/~api") || req.path === "/config" || req.path === "/ping") return next();
-  res.sendFile(path.join(process.cwd(), "dist", "index.html"));
-});
+const app = createApp({ storage: storageFromEnv, verifier: verifierFromEnv() });
 
 const PORT = process.env.PORT || 8081;
-if (!process.env.VERCEL) {
+if (!process.env.VERCEL && !process.env.VITEST) {
   app.listen(PORT, () => {
     console.log(`Server listening on port ${PORT}`);
   });

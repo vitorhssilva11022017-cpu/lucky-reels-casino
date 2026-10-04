@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { seededRandom } from "./rng";
 import type { LineWin, MachineConfig, Rng, ScatterResult, SpinOutcome } from "./types";
 

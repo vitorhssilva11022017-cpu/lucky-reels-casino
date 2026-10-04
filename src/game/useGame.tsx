@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { useAuth } from "@/hooks/useAuth";
-import { ApiError, apiGet, apiPost, resetGuest } from "@/lib/backend";
+import { ApiError, apiGet, apiPost, currentGuest, resetGuest } from "@/lib/backend";
 
 import { audio, vibrate } from "./audio";
 import { CORE_SFX, LOBBY_MUSIC } from "./machines";
@@ -122,9 +122,11 @@ export const [GameProvider, useGame] = createContextHook(() => {
     sessionKeyRef.current = key;
     setSessionError(null);
     try {
-      let res: { player: Player };
+      let res: { player: Player; merged?: boolean };
       try {
-        res = await apiPost<{ player: Player }>("/session");
+        // Signed-in players name this browser's guest profile; the server moves it into the
+        // account only if the account is new and the guest secret matches.
+        res = await apiPost<{ player: Player; merged?: boolean }>("/session", user ? { import: currentGuest() } : {});
       } catch (err) {
         if (err instanceof ApiError && (err.code === "merged" || err.code === "bad_guest") && !user) {
           resetGuest();
@@ -133,6 +135,7 @@ export const [GameProvider, useGame] = createContextHook(() => {
           throw err;
         }
       }
+      if (user && res.merged) resetGuest();
       if (sessionKeyRef.current !== key) return;
       applyPlayer(res.player);
     } catch (err) {

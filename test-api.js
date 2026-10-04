@@ -1,6 +1,5 @@
 const guestId = "test-runner-" + Date.now();
 const guestSecret = "12345678901234567890123456789012345";
-let currentState = null;
 
 async function req(path, body = {}) {
   const headers = {
@@ -8,18 +7,11 @@ async function req(path, body = {}) {
     'x-guest-secret': guestSecret,
     'content-type': 'application/json'
   };
-  if (currentState) {
-    headers['x-guest-state'] = currentState;
-  }
   const res = await fetch(`https://web-lucky-reels-casino.vercel.app/~api${path}`, {
     method: 'POST',
     headers,
     body: JSON.stringify(body)
   });
-  
-  if (res.headers.get('x-guest-state')) {
-    currentState = res.headers.get('x-guest-state');
-  }
   
   const data = await res.json();
   if (data.error) throw new Error(`${path} failed: ${data.error} - ${data.message}`);

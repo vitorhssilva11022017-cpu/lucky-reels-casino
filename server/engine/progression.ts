@@ -1,4 +1,3 @@
-// @ts-nocheck
 /** Economy and progression rules. All values are virtual coins with no real-world value. */
 
 export const START_BALANCE = 2_000_000;

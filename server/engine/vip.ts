@@ -1,4 +1,3 @@
-// @ts-nocheck
 /** Lucky VIP: seven lifetime tiers earned by wagering. 1 point per 1,000 coins wagered on paid spins. Points never reset. */
 
 import { dayKey, nextResetAt } from "./missions";

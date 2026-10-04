@@ -1,4 +1,3 @@
-// @ts-nocheck
 import egyptianTreasure from "../machines/egyptian-treasure.json" with { type: "json" };
 import neonFruits from "../machines/neon-fruits.json" with { type: "json" };
 import dragonsFortune from "../machines/dragons-fortune.json" with { type: "json" };

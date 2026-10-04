@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Referral program: players share an invite link, and both sides win coins.
  * Purely virtual rewards — coins have no real-world value.

@@ -51,6 +51,23 @@ export function resetGuest(): void {
   newGuest();
 }
 
+/** This browser's guest credentials, sent once on sign-in so the server can merge the guest profile. */
+export function currentGuest(): GuestCreds {
+  return guestCreds();
+}
+
+/** Older builds cached the whole player state locally; the server no longer reads it. */
+function clearLegacyState(): void {
+  try {
+    for (const key of Object.keys(localStorage)) {
+      if (key.startsWith("guest_state_")) localStorage.removeItem(key);
+    }
+  } catch {
+    /* storage unavailable */
+  }
+}
+clearLegacyState();
+
 async function request<T>(path: string, init: RequestInit): Promise<T> {
   const guest = guestCreds();
   const token = await getValidAccessToken();
@@ -59,8 +76,6 @@ async function request<T>(path: string, init: RequestInit): Promise<T> {
     "X-Guest-Id": guest.id,
     "X-Guest-Secret": guest.secret,
   };
-  const savedState = localStorage.getItem("guest_state_" + guest.id);
-  if (savedState) headers["X-Guest-State"] = savedState;
   
   if (token) headers.Authorization = `Bearer ${token}`;
 
@@ -71,9 +86,6 @@ async function request<T>(path: string, init: RequestInit): Promise<T> {
     throw new ApiError(0, "network", "Can't reach the casino. Check your connection.");
   }
   const text = await res.text();
-  const stateHeader = res.headers.get("X-Guest-State");
-  if (stateHeader) localStorage.setItem("guest_state_" + guest.id, stateHeader);
-  
   let data: unknown = null;
   try {
     data = text ? JSON.parse(text) : null;

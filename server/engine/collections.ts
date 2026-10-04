@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Collections album: five machine-themed card sets, four cards each.
  * Paid spins can drop cards (server-decided). Duplicates auto-convert to

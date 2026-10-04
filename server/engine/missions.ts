@@ -1,4 +1,3 @@
-// @ts-nocheck
 /** Daily missions: three goals per UTC day (easy, medium, hard) plus a bonus chest for finishing all three. */
 
 import { wheelMultiplier } from "./progression";

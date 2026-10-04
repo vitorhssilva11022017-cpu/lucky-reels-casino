@@ -1,4 +1,3 @@
-// @ts-nocheck
 /** Symbol categories used by the slot engine. */
 export type SymbolKind = "wild" | "scatter" | "high" | "low";
 

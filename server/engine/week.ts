@@ -1,4 +1,3 @@
-// @ts-nocheck
 /** Weekly leaderboard cycle: anchored to Monday 00:00 UTC, top 50 biggest single wins. */
 
 export const BOARD_SIZE = 50;

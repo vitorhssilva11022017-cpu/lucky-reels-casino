@@ -1,4 +1,3 @@
-// @ts-nocheck
 import type { Rng } from "./types";
 
 const POOL_SIZE = 256;

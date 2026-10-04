@@ -1,4 +1,3 @@
-// @ts-nocheck
 /** Daily login streak: claim once per UTC day, rewards climb over a 7-day cycle, missing a day restarts at Day 1. */
 
 import { dayKey, nextResetAt } from "./missions";

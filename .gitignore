@@ -37,3 +37,6 @@ lerna-debug.log*
 *.sw?
 .vercel
 .env*
+
+# local dev data (JsonStorage fallback)
+.data/

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { MACHINE_LISTINGS, MACHINES } from "./engine/machines.js";
 import {
   BONUS_INTERVAL_MS,
@@ -21,9 +20,12 @@ import { claimStreak, emptyStreak, type StreakData, streakStatus } from "./engin
 import { pointsForWager, tierFor, vipStatus } from "./engine/vip.js";
 import { BOARD_SIZE, boardReward, REWARD_TIERS, weekEnd, weekKey } from "./engine/week.js";
 import { evaluateGrid, playSpin, winTier } from "./engine/slot.js";
-import type { SpinOutcome } from "./engine/types.js";
-import { JsonStore } from "./store.js";
+import type { Rng, SpinOutcome } from "./engine/types.js";
+import { HttpError } from "./errors.js";
+import { type BoardKind, type Credits, type Lock, NO_CREDITS, type Storage } from "./store.js";
 import crypto from "crypto";
+
+export { HttpError };
 
 interface FreeSpinState {
   machineId: string;
@@ -66,32 +68,25 @@ export interface PlayerData {
   setClaimed?: string[];
 }
 
-export interface BoardEntryData {
-  boardId: string;
-  name: string;
-  level: number;
-  win: number;
-  machine: string;
-  ts: number;
-  spins?: number;
-  vip?: string;
+/** Who is making the request. Guests prove themselves with their secret; users with a verified token. */
+export interface Identity {
+  playerId: string;
+  isGuest: boolean;
+  guestSecret: string | null;
 }
 
-export class HttpError extends Error {
-  constructor(
-    public status: number,
-    public code: string,
-    message: string,
-  ) {
-    super(message);
-  }
+export const GUEST_PREFIX = "g:";
+export const USER_PREFIX = "u:";
+
+const GUEST_ID_RE = /^[A-Za-z0-9-]{8,64}$/;
+
+export function isValidGuestId(id: string): boolean {
+  return GUEST_ID_RE.test(id);
 }
 
-export const playersStore = new JsonStore<PlayerData>("players.json");
-export const boardStore = new JsonStore<{ week: string }>("boardMeta.json");
-export const boardEntriesStore = new JsonStore<BoardEntryData>("boardEntries.json");
-export const wagerEntriesStore = new JsonStore<BoardEntryData>("wagerEntries.json");
-export const refStore = new JsonStore<{ owner: string; name?: string }>("refs.json");
+export function isValidGuestSecret(secret: string): boolean {
+  return secret.length >= 32 && secret.length <= 128;
+}
 
 function hashStr(text: string): string {
   return crypto.createHash("sha256").update(text).digest("hex");
@@ -129,68 +124,164 @@ function freshPlayer(id: string, now: number): PlayerData {
   };
 }
 
+interface ExtraWrite {
+  lock: Lock;
+  player: PlayerData;
+  consumed: Credits;
+}
+
+/**
+ * Handles one API request for one player. The server state in `Storage` is the
+ * only source of truth: nothing the client sends about balances or progress is
+ * trusted. `handle` loads the player under its lock, runs the route, then saves.
+ */
 export class PlayerService {
-  constructor(private playerId: string) {}
+  private d: PlayerData | null = null;
+  private consumed: Credits = { ...NO_CREDITS };
+  /** Writes to other players (merged guest profiles), committed after this player. */
+  private extraWrites: ExtraWrite[] = [];
+  private extraLocks: Lock[] = [];
+  /** Shared-state updates (leaderboards, referral credits) applied after the player is saved. */
+  private after: Array<() => Promise<void>> = [];
+
+  constructor(
+    private storage: Storage,
+    private identity: Identity,
+    private rng: Rng = secureRng,
+  ) {}
+
+  private get playerId() {
+    return this.identity.playerId;
+  }
+
+  async handle(route: string, body: Record<string, unknown>): Promise<unknown> {
+    const lock = await this.storage.acquire(this.playerId);
+    try {
+      const { player, credits } = await this.storage.load(this.playerId);
+      this.d = player;
+      if (player && !player.mergedInto) this.authorize(player);
+      if (player && !player.mergedInto) this.applyCredits(player, credits);
+
+      const result = await this.dispatch(route, body);
+
+      if (this.d && !this.d.mergedInto) await this.storage.save(lock, this.d, this.consumed);
+      for (const w of this.extraWrites) await this.storage.save(w.lock, w.player, w.consumed);
+      for (const fn of this.after) await fn();
+      return result;
+    } finally {
+      for (const l of this.extraLocks) await this.storage.release(l).catch(() => undefined);
+      await this.storage.release(lock);
+    }
+  }
+
+  private authorize(player: PlayerData) {
+    if (!this.identity.isGuest) return;
+    const secret = this.identity.guestSecret ?? "";
+    if (!player.guestSecretHash || hashStr(secret) !== player.guestSecretHash) {
+      throw new HttpError(401, "bad_guest", "Guest credentials do not match");
+    }
+  }
+
+  private applyCredits(player: PlayerData, credits: Credits) {
+    if (!credits.balance && !credits.refCount) return;
+    player.balance += credits.balance;
+    player.refCount = (player.refCount ?? 0) + credits.refCount;
+    this.consumed = { ...credits };
+  }
+
+  private async dispatch(route: string, body: Record<string, unknown>): Promise<unknown> {
+    switch (route) {
+      case "/session": return this.session(body);
+      case "/spin": return this.spin(body);
+      case "/bonus": return this.collectBonus();
+      case "/wheel": return this.spinWheel();
+      case "/store": return this.claimPack(String(body.packId ?? ""));
+      case "/missions": return this.claimMission(body);
+      case "/streak": return this.claimDailyStreak();
+      case "/vip": return this.claimVipGift();
+      case "/referral": return this.claimReferral(body);
+      case "/collectionClaim": return this.claimSetReward(body);
+      case "/leaderboard": return this.getLeaderboard(body.boardId === "wagers" ? "wagers" : "wins");
+      case "/leaderboardClaim": return this.claimBoardReward(body.boardId === "wagers" ? "wagers" : "wins");
+      case "/settings": return this.updateSettings(body);
+      case "/tutorial": return this.setTutorial(body.done !== false);
+      default: throw new HttpError(404, "not_found", "Route not found");
+    }
+  }
 
   private get data(): PlayerData {
-    const d = playersStore.get(this.playerId);
+    const d = this.d;
     if (!d) throw new HttpError(409, "no_session", "Start a session first");
     if (d.mergedInto) throw new HttpError(410, "merged", "This guest profile was moved to an account");
     return d;
   }
 
-  private save() {
-    playersStore.set(this.playerId, this.data);
-  }
-
-  async verifyGuest(secret: string) {
-    const d = playersStore.get(this.playerId);
-    if (!d) return;
-    if (!d.guestSecretHash || hashStr(secret) !== d.guestSecretHash) {
-      throw new HttpError(401, "bad_guest", "Guest credentials do not match");
-    }
-  }
-
-  async session(isGuest: boolean, guestSecret: string, body: Record<string, unknown>) {
+  async session(body: Record<string, unknown>) {
     const now = Date.now();
+    const { isGuest } = this.identity;
     const displayName = typeof body.displayName === "string" ? body.displayName.slice(0, 40) : null;
-    let d = playersStore.get(this.playerId);
 
-    if (d?.mergedInto) {
+    if (this.d?.mergedInto) {
       throw new HttpError(410, "merged", "This guest profile was moved to an account");
     }
 
-    if (!d) {
-      if (isGuest && guestSecret.length < 32) throw new HttpError(400, "bad_guest", "Invalid guest credentials");
-      const imported = body.import as PlayerData | null | undefined;
-      const next: PlayerData = imported ? { ...imported, id: this.playerId, guestSecretHash: null, mergedInto: null } : freshPlayer(this.playerId, now);
-      if (isGuest) next.guestSecretHash = hashStr(guestSecret);
-      playersStore.set(this.playerId, next);
-      d = next;
-    } else if (isGuest) {
-      await this.verifyGuest(guestSecret);
+    let merged = false;
+    if (!this.d) {
+      let next: PlayerData;
+      const imported = isGuest ? null : await this.importGuest(body.import);
+      if (imported) {
+        next = { ...imported, id: this.playerId, guestSecretHash: null, mergedInto: null };
+        merged = true;
+        if (next.refCode) this.after.push(() => this.storage.setRefCode(next.refCode!, this.playerId));
+      } else {
+        next = freshPlayer(this.playerId, now);
+      }
+      if (isGuest) next.guestSecretHash = hashStr(this.identity.guestSecret ?? "");
+      this.d = next;
     }
 
+    const d = this.d;
     if (!isGuest && displayName) d.displayName = displayName;
     if (!d.boardId) d.boardId = crypto.randomUUID();
     this.ensureMissions(d);
-    this.ensureCode(d);
-    this.save();
-    this.registerCode(d);
-    return { player: this.publicPlayer(isGuest), merged: Boolean(body.import) };
+    if (!merged) await this.ensureCode(d);
+    return { player: this.publicPlayer(), merged };
   }
 
-  private ensureCode(d: PlayerData) {
-    if (!d.refCode) {
-      d.refCode = newReferralCode();
-      this.save();
+  /**
+   * Moves an existing server-side guest profile into this signed-in account. The
+   * client only names the guest and proves it owns it; the data comes from storage.
+   */
+  private async importGuest(raw: unknown): Promise<PlayerData | null> {
+    if (!raw || typeof raw !== "object") return null;
+    const req = raw as { guestId?: unknown; guestSecret?: unknown };
+    const guestId = typeof req.guestId === "string" ? req.guestId : "";
+    const guestSecret = typeof req.guestSecret === "string" ? req.guestSecret : "";
+    if (!isValidGuestId(guestId) || !isValidGuestSecret(guestSecret)) return null;
+
+    const guestKey = GUEST_PREFIX + guestId;
+    const lock = await this.storage.acquire(guestKey);
+    this.extraLocks.push(lock);
+    const { player: guest, credits } = await this.storage.load(guestKey);
+    if (!guest || guest.mergedInto || !guest.guestSecretHash || hashStr(guestSecret) !== guest.guestSecretHash) {
+      return null;
     }
-    return d.refCode;
+    const copy: PlayerData = structuredClone(guest);
+    copy.balance += credits.balance;
+    copy.refCount = (copy.refCount ?? 0) + credits.refCount;
+    this.extraWrites.push({ lock, player: { ...guest, mergedInto: this.playerId }, consumed: credits });
+    return copy;
   }
 
-  private registerCode(d: PlayerData) {
-    if (!d.refCode) return;
-    refStore.set(d.refCode, { owner: this.playerId, name: this.boardName(d) });
+  /** Makes sure the player owns a unique, registered invite code. */
+  private async ensureCode(d: PlayerData) {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      d.refCode ??= newReferralCode();
+      const owner = await this.storage.claimRefCode(d.refCode, this.playerId);
+      if (owner === this.playerId) return;
+      d.refCode = newReferralCode();
+    }
+    throw new HttpError(503, "server_busy", "Please try again in a moment");
   }
 
   private boardName(d: PlayerData): string {
@@ -211,8 +302,7 @@ export class PlayerService {
     claimed.push(setId);
     d.setClaimed = claimed;
     d.balance += set.reward;
-    this.save();
-    return { amount: set.reward, setId, player: this.publicPlayer(null) };
+    return { amount: set.reward, setId, player: this.publicPlayer() };
   }
 
   async claimReferral(body: Record<string, unknown>) {
@@ -223,33 +313,17 @@ export class PlayerService {
     }
     const code = String(body.code ?? "").trim().toUpperCase().slice(0, 12);
     if (!/^[A-Z2-9]{6,12}$/.test(code)) throw new HttpError(400, "bad_code", "That invite code doesn't look right");
-    this.ensureCode(d);
-    const rec = refStore.get(code);
-    const owner = rec?.owner ?? "";
+
+    const owner = await this.storage.lookupRefCode(code);
     if (!owner) throw new HttpError(404, "unknown_code", "Invite code not found");
     if (owner === this.playerId) throw new HttpError(400, "own_code", "You can't use your own invite code");
 
     d.refBy = owner;
     d.balance += REFERRAL_WELCOME;
-    this.save();
-    
-    // Credit inviter
-    const inviter = playersStore.get(owner);
-    if (inviter) {
-      if (inviter.mergedInto) {
-         const accountInviter = playersStore.get(inviter.mergedInto);
-         if (accountInviter) {
-             accountInviter.refCount = (accountInviter.refCount ?? 0) + 1;
-             accountInviter.balance += REFERRAL_PER_FRIEND;
-             playersStore.set(inviter.mergedInto, accountInviter);
-         }
-      } else {
-        inviter.refCount = (inviter.refCount ?? 0) + 1;
-        inviter.balance += REFERRAL_PER_FRIEND;
-        playersStore.set(owner, inviter);
-      }
-    }
-    return { amount: REFERRAL_WELCOME, player: this.publicPlayer(null) };
+    // The inviter is credited through a pending-credit counter they pick up on their next request,
+    // so this request never writes another player's record.
+    this.after.push(() => this.storage.addCredits(owner, { balance: REFERRAL_PER_FRIEND, refCount: 1 }));
+    return { amount: REFERRAL_WELCOME, player: this.publicPlayer() };
   }
 
   async spin(body: Record<string, unknown>) {
@@ -296,7 +370,7 @@ export class PlayerService {
       outcome = { stops: [], ...evaluateGrid(cfg, cfg.tutorialGrid, bet, 1) };
       d.tutorialScriptUsed = true;
     } else {
-      outcome = playSpin(cfg, secureRng, bet, multiplier);
+      outcome = playSpin(cfg, this.rng, bet, multiplier);
     }
 
     d.balance += outcome.totalWin;
@@ -326,7 +400,7 @@ export class PlayerService {
     const tier = winTier(cfg, outcome.totalWin, bet);
     const dm = this.ensureMissions(d);
     let cardDrop = null;
-    
+
     if (!isFreeSpin) {
       trackMission(dm, "spins", 1);
       trackMission(dm, "wager", bet);
@@ -334,7 +408,7 @@ export class PlayerService {
       if (awarded > 0) trackMission(dm, "freeSpins", 1);
       d.vipPoints = Math.min(Number.MAX_SAFE_INTEGER, (d.vipPoints ?? 0) + pointsForWager(bet));
       d.cards ??= {};
-      const drop = rollCardDrop(secureRng, d.cards);
+      const drop = rollCardDrop(this.rng, d.cards);
       if (drop) {
         const duplicate = (d.cards[drop.id] ?? 0) > 0;
         d.cards[drop.id] = (d.cards[drop.id] ?? 0) + 1;
@@ -359,13 +433,16 @@ export class PlayerService {
 
     const levelUps = isFreeSpin ? [] : this.applyXp(d, xpForBet(bet));
 
+    const now = Date.now();
+    const week = weekKey(now);
+    const info = { name: this.boardName(d), level: d.level, machine: machineId, vip: tierFor(d.vipPoints ?? 0).name, ts: now };
     if (outcome.totalWin >= bet * 2) {
-      this.reportBoardWin(d, machineId, outcome.totalWin);
+      const win = outcome.totalWin;
+      this.after.push(() => this.storage.recordWin(week, d.boardId, win, info));
     }
     if (!isFreeSpin) {
-      this.reportWager(d, machineId, bet);
+      this.after.push(() => this.storage.recordWager(week, d.boardId, bet, info));
     }
-    this.save();
 
     return {
       outcome: {
@@ -387,7 +464,7 @@ export class PlayerService {
       levelUps,
       cardDrop,
       scripted: useScript,
-      player: this.publicPlayer(null),
+      player: this.publicPlayer(),
     };
   }
 
@@ -419,8 +496,7 @@ export class PlayerService {
     d.balance += amount;
     d.nextBonusAt = now + BONUS_INTERVAL_MS;
     trackMission(this.ensureMissions(d), "bonus", 1);
-    this.save();
-    return { amount, player: this.publicPlayer(null) };
+    return { amount, player: this.publicPlayer() };
   }
 
   async spinWheel() {
@@ -428,7 +504,7 @@ export class PlayerService {
     const now = Date.now();
     if (now < d.nextWheelAt) throw new HttpError(409, "not_ready", "The wheel is not ready yet");
     const totalWeight = WHEEL_SEGMENTS.reduce((s, seg) => s + seg.weight, 0);
-    let roll = secureRng(totalWeight);
+    let roll = this.rng(totalWeight);
     let index = 0;
     for (let i = 0; i < WHEEL_SEGMENTS.length; i++) {
       roll -= WHEEL_SEGMENTS[i].weight;
@@ -440,8 +516,7 @@ export class PlayerService {
     const amount = Math.round(WHEEL_SEGMENTS[index].amount * wheelMultiplier(d.level));
     d.balance += amount;
     d.nextWheelAt = now + WHEEL_INTERVAL_MS;
-    this.save();
-    return { index, amount, player: this.publicPlayer(null) };
+    return { index, amount, player: this.publicPlayer() };
   }
 
   async claimPack(packId: string) {
@@ -452,8 +527,7 @@ export class PlayerService {
     if (now < (d.storeReadyAt[pack.id] ?? 0)) throw new HttpError(409, "not_ready", "This pack is cooling down");
     d.balance += pack.amount;
     d.storeReadyAt[pack.id] = now + pack.cooldownMs;
-    this.save();
-    return { amount: pack.amount, player: this.publicPlayer(null) };
+    return { amount: pack.amount, player: this.publicPlayer() };
   }
 
   private ensureMissions(d: PlayerData): DailyMissions {
@@ -482,104 +556,55 @@ export class PlayerService {
       amount = mission.reward;
     }
     d.balance += amount;
-    this.save();
-    return { amount, player: this.publicPlayer(null) };
+    return { amount, player: this.publicPlayer() };
   }
 
-  private checkBoardWeek() {
+  async getLeaderboard(board: BoardKind) {
+    const d = this.data;
     const now = Date.now();
     const week = weekKey(now);
-    const meta = boardStore.get("meta");
-    if (!meta || meta.week !== week) {
-      boardEntriesStore.values().forEach(e => boardEntriesStore.delete(e.boardId));
-      wagerEntriesStore.values().forEach(e => wagerEntriesStore.delete(e.boardId));
-      boardStore.set("meta", { week });
-    }
-    return week;
-  }
-
-  private reportBoardWin(d: PlayerData, machineId: string, win: number) {
-    this.checkBoardWeek();
-    const current = boardEntriesStore.get(d.boardId);
-    if (current && current.win >= win) return;
-    boardEntriesStore.set(d.boardId, {
-      boardId: d.boardId,
-      name: this.boardName(d),
-      level: d.level,
-      win,
-      machine: machineId,
-      ts: Date.now(),
-      vip: tierFor(d.vipPoints ?? 0).name,
-    });
-  }
-
-  private reportWager(d: PlayerData, machineId: string, bet: number) {
-    this.checkBoardWeek();
-    const current = wagerEntriesStore.get(d.boardId);
-    wagerEntriesStore.set(d.boardId, {
-      boardId: d.boardId,
-      name: this.boardName(d),
-      level: d.level,
-      win: Math.min((current?.win ?? 0) + bet, Number.MAX_SAFE_INTEGER),
-      machine: machineId,
-      ts: current?.ts ?? Date.now(),
-      spins: (current?.spins ?? 0) + 1,
-      vip: tierFor(d.vipPoints ?? 0).name,
-    });
-  }
-
-  async getLeaderboard(board: "wins" | "wagers") {
-    const d = this.data;
-    const week = this.checkBoardWeek();
-    const store = board === "wagers" ? wagerEntriesStore : boardEntriesStore;
-    const all = store.values().sort((a, b) => b.win - a.win || a.ts - b.ts);
-    const idx = all.findIndex(e => e.boardId === d.boardId);
-    
+    const [rows, you] = await Promise.all([
+      this.storage.top(board, week, BOARD_SIZE),
+      this.storage.rank(board, week, d.boardId),
+    ]);
     return {
       board,
       week,
-      endsAt: weekEnd(Date.now()),
-      entries: all.slice(0, BOARD_SIZE).map((e, i) => ({
+      endsAt: weekEnd(now),
+      entries: rows.map((e, i) => ({
         rank: i + 1,
         name: e.name,
         level: e.level,
-        win: e.win,
-        wager: board === "wagers" ? e.win : undefined,
+        win: e.score,
+        wager: board === "wagers" ? e.score : undefined,
         spins: board === "wagers" ? e.spins ?? 0 : undefined,
         machine: e.machine,
         ts: e.ts,
         vip: e.vip,
       })),
-      you: idx >= 0 ? { rank: idx + 1, win: all[idx].win } : null,
+      you: you ? { rank: you.rank, win: you.score } : null,
       rewardTiers: REWARD_TIERS,
       champions: null,
     };
   }
 
-  async claimBoardReward(board: "wins" | "wagers") {
+  async claimBoardReward(board: BoardKind) {
     const d = this.data;
-    const now = Date.now();
-    const week = weekKey(now);
+    const week = weekKey(Date.now());
     const wagered = board === "wagers";
     if ((wagered ? d.wagerClaimWeek : d.boardClaimWeek) === week) {
       throw new HttpError(409, "already_claimed", "This week's reward is already collected");
     }
-    
-    this.checkBoardWeek();
-    const store = wagered ? wagerEntriesStore : boardEntriesStore;
-    const all = store.values().sort((a, b) => b.win - a.win || a.ts - b.ts);
-    const idx = all.findIndex(e => e.boardId === d.boardId);
-    const rank = idx >= 0 ? idx + 1 : null;
-    
-    if (!rank || rank < 1 || rank > BOARD_SIZE) throw new HttpError(409, "not_ready", "Reach a paid rank to claim a weekly prize");
+    const standing = await this.storage.rank(board, week, d.boardId);
+    const rank = standing?.rank ?? null;
+    if (!rank || rank > BOARD_SIZE) throw new HttpError(409, "not_ready", "Reach a paid rank to claim a weekly prize");
     const amount = boardReward(rank);
     if (amount <= 0) throw new HttpError(409, "not_ready", "No reward for this rank");
-    
+
     d.balance += amount;
     if (wagered) d.wagerClaimWeek = week;
     else d.boardClaimWeek = week;
-    this.save();
-    return { amount, rank, board, player: this.publicPlayer(null) };
+    return { amount, rank, board, player: this.publicPlayer() };
   }
 
   async claimVipGift() {
@@ -590,8 +615,7 @@ export class PlayerService {
     const amount = vipStatus(d.vipPoints ?? 0, d.vipGiftDay ?? null, now).gift;
     d.vipGiftDay = day;
     d.balance += amount;
-    this.save();
-    return { amount, player: this.publicPlayer(null) };
+    return { amount, player: this.publicPlayer() };
   }
 
   async claimDailyStreak() {
@@ -600,30 +624,26 @@ export class PlayerService {
     const res = claimStreak(d.streak, d.level, Date.now());
     if (!res) throw new HttpError(409, "already_claimed", "Today's reward is already collected");
     d.balance += res.amount;
-    this.save();
-    return { amount: res.amount, day: res.day, player: this.publicPlayer(null) };
+    return { amount: res.amount, day: res.day, player: this.publicPlayer() };
   }
 
   async updateSettings(body: Record<string, unknown>) {
     const d = this.data;
     if (typeof body.music === "boolean") d.settings.music = body.music;
     if (typeof body.sfx === "boolean") d.settings.sfx = body.sfx;
-    this.save();
-    return { player: this.publicPlayer(null) };
+    return { player: this.publicPlayer() };
   }
 
   async setTutorial(done: boolean) {
     const d = this.data;
     d.tutorialDone = done;
-    this.save();
-    return { player: this.publicPlayer(null) };
+    return { player: this.publicPlayer() };
   }
 
-  publicPlayer(isGuest: boolean | null) {
+  publicPlayer() {
     const d = this.data;
-    const name = this.playerId;
     return {
-      identity: isGuest === null ? (name.startsWith("g:") ? "guest" : "user") : isGuest ? "guest" : "user",
+      identity: this.identity.isGuest ? "guest" : "user",
       displayName: d.displayName,
       balance: d.balance,
       level: d.level,
